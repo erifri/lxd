@@ -40,6 +40,10 @@ profile "{{ .name }}" flags=(attach_disconnected,mediate_deleted) {
   /usr/share/qemu/**                        kr,
   /usr/share/seabios/**                     kr,
   owner @{PROC}/@{pid}/task/@{tid}/comm     rw,
+  {{ .rootPath }}/etc/nsswitch.conf         r,
+  {{ .rootPath }}/etc/passwd                r,
+  {{ .rootPath }}/etc/group                 r,
+  @{PROC}/version                           r,
 
   # Instance specific paths
   {{ .logPath }}/** rwk,
@@ -64,6 +68,10 @@ profile "{{ .name }}" flags=(attach_disconnected,mediate_deleted) {
   /snap/lxd/*/bin/lxd                       mr,
   /snap/lxd/*/bin/qemu*                     mrix,
   /snap/lxd/*/share/qemu/**                 kr,
+
+  # Snap-specific paths
+  /var/snap/lxd/common/ceph/**              r,
+  {{ .rootPath }}/etc/ceph/**               r,
 
   # Snap-specific libraries
   /snap/lxd/*/lib/**.so*            mr,

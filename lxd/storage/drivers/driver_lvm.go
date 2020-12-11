@@ -87,17 +87,16 @@ func (d *lvm) load() error {
 // Info returns info about the driver and its environment.
 func (d *lvm) Info() Info {
 	return Info{
-		Name:               "lvm",
-		Version:            lvmVersion,
-		OptimizedImages:    d.usesThinpool(), // Only thinpool pools support optimized images.
-		PreservesInodes:    false,
-		Remote:             d.isRemote(),
-		VolumeTypes:        []VolumeType{VolumeTypeCustom, VolumeTypeImage, VolumeTypeContainer, VolumeTypeVM},
-		BlockBacking:       true,
-		RunningQuotaResize: false,
-		RunningCopyFreeze:  false,
-		DirectIO:           true,
-		MountedRoot:        false,
+		Name:              "lvm",
+		Version:           lvmVersion,
+		OptimizedImages:   d.usesThinpool(), // Only thinpool pools support optimized images.
+		PreservesInodes:   false,
+		Remote:            d.isRemote(),
+		VolumeTypes:       []VolumeType{VolumeTypeCustom, VolumeTypeImage, VolumeTypeContainer, VolumeTypeVM},
+		BlockBacking:      true,
+		RunningCopyFreeze: false,
+		DirectIO:          true,
+		MountedRoot:       false,
 	}
 }
 
@@ -357,7 +356,7 @@ func (d *lvm) Delete(op *operations.Operation) error {
 				// Thin pool exists.
 				if err == nil {
 					// If thin pool is empty and the total VG volume count is 1 (our thin pool
-					// volume) then just remote the entire volume group.
+					// volume) then just remove the entire volume group.
 					if thinVolCount == 0 && lvCount == 1 {
 						removeVg = true
 					} else if thinVolCount == 0 && lvCount > 1 {

@@ -6,14 +6,13 @@ import (
 	"os"
 	"strings"
 
-	liblxc "gopkg.in/lxc/go-lxc.v2"
-
 	lxd "github.com/lxc/lxd/client"
 	"github.com/lxc/lxd/lxd/cluster"
 	"github.com/lxc/lxd/lxd/config"
 	"github.com/lxc/lxd/lxd/db"
 	"github.com/lxc/lxd/lxd/node"
 	"github.com/lxc/lxd/lxd/project"
+	"github.com/lxc/lxd/lxd/rbac"
 	"github.com/lxc/lxd/lxd/response"
 	"github.com/lxc/lxd/lxd/util"
 	"github.com/lxc/lxd/shared"
@@ -201,8 +200,6 @@ func api10Get(d *Daemon, r *http.Request) response.Response {
 		Architectures:          architectures,
 		Certificate:            certificate,
 		CertificateFingerprint: certificateFingerprint,
-		Driver:                 "lxc",
-		DriverVersion:          liblxc.Version(),
 		Kernel:                 uname.Sysname,
 		KernelArchitecture:     uname.Machine,
 		KernelVersion:          uname.Release,
@@ -224,6 +221,22 @@ func api10Get(d *Daemon, r *http.Request) response.Response {
 		"seccomp_listener":          fmt.Sprintf("%v", d.os.SeccompListener),
 		"seccomp_listener_continue": fmt.Sprintf("%v", d.os.SeccompListenerContinue),
 		"shiftfs":                   fmt.Sprintf("%v", d.os.Shiftfs),
+	}
+
+	instanceDrivers := readInstanceDriversCache()
+	for driver, version := range instanceDrivers {
+		if env.Driver != "" {
+			env.Driver = env.Driver + " | " + driver
+		} else {
+			env.Driver = driver
+		}
+
+		// Get the version of the instance drivers in use.
+		if env.DriverVersion != "" {
+			env.DriverVersion = env.DriverVersion + " | " + version
+		} else {
+			env.DriverVersion = version
+		}
 	}
 
 	if d.os.LXCFeatures != nil {
@@ -252,7 +265,7 @@ func api10Get(d *Daemon, r *http.Request) response.Response {
 	fullSrv := api.Server{ServerUntrusted: srv}
 	fullSrv.Environment = env
 
-	if d.userIsAdmin(r) {
+	if rbac.UserIsAdmin(r) {
 		fullSrv.Config, err = daemonConfigRender(d.State())
 		if err != nil {
 			return response.InternalError(err)

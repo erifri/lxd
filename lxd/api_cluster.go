@@ -16,6 +16,7 @@ import (
 
 	lxd "github.com/lxc/lxd/client"
 	"github.com/lxc/lxd/lxd/cluster"
+	"github.com/lxc/lxd/lxd/cluster/request"
 	"github.com/lxc/lxd/lxd/db"
 	"github.com/lxc/lxd/lxd/node"
 	"github.com/lxc/lxd/lxd/operations"
@@ -144,7 +145,7 @@ func clusterGetMemberConfig(cluster *db.Cluster) ([]api.ClusterMemberConfigKey, 
 
 	for pool, config := range pools {
 		for key := range config {
-			if strings.HasPrefix(key, "volatile.") {
+			if strings.HasPrefix(key, shared.ConfigVolatilePrefix) {
 				continue
 			}
 
@@ -160,7 +161,7 @@ func clusterGetMemberConfig(cluster *db.Cluster) ([]api.ClusterMemberConfigKey, 
 
 	for network, config := range networks {
 		for key := range config {
-			if strings.HasPrefix(key, "volatile.") {
+			if strings.HasPrefix(key, shared.ConfigVolatilePrefix) {
 				continue
 			}
 
@@ -388,7 +389,7 @@ func clusterPutJoin(d *Daemon, req api.ClusterPut) response.Response {
 		// As ServerAddress field is required to be set it means that we're using the new join API
 		// introduced with the 'clustering_join' extension.
 		// Connect to ourselves to initialize storage pools and networks using the API.
-		localClient, err := lxd.ConnectLXDUnix(d.UnixSocket(), &lxd.ConnectionArgs{UserAgent: cluster.UserAgentJoiner})
+		localClient, err := lxd.ConnectLXDUnix(d.UnixSocket(), &lxd.ConnectionArgs{UserAgent: request.UserAgentJoiner})
 		if err != nil {
 			return errors.Wrap(err, "Failed to connect to local LXD")
 		}
@@ -410,7 +411,7 @@ func clusterPutJoin(d *Daemon, req api.ClusterPut) response.Response {
 		}
 
 		for _, name := range poolNames {
-			_, pool, err := d.cluster.GetStoragePoolInAnyState(name)
+			_, pool, _, err := d.cluster.GetStoragePoolInAnyState(name)
 			if err != nil {
 				return err
 			}
@@ -436,7 +437,7 @@ func clusterPutJoin(d *Daemon, req api.ClusterPut) response.Response {
 			}
 
 			for _, name := range networkNames {
-				_, network, err := d.cluster.GetNetworkInAnyState(p.Name, name)
+				_, network, _, err := d.cluster.GetNetworkInAnyState(p.Name, name)
 				if err != nil {
 					return err
 				}
@@ -499,34 +500,6 @@ func clusterPutJoin(d *Daemon, req api.ClusterPut) response.Response {
 			err := d.cluster.DeleteCertificate(fingerprint)
 			if err != nil {
 				return errors.Wrap(err, "Failed to delete joining member's certificate")
-			}
-		}
-
-		// For ceph pools we have to trigger the local mountpoint creation too.
-		poolNames, err = d.cluster.GetStoragePoolNames()
-		if err != nil && err != db.ErrNoSuchObject {
-			return err
-		}
-
-		for _, name := range poolNames {
-			id, pool, err := d.cluster.GetStoragePoolInAnyState(name)
-			if err != nil {
-				return err
-			}
-
-			if !shared.StringInSlice(pool.Driver, []string{"ceph", "cephfs"}) {
-				continue
-			}
-
-			// Re-assemble a StoragePoolsPost
-			req := api.StoragePoolsPost{}
-			req.StoragePoolPut = pool.StoragePoolPut
-			req.Name = pool.Name
-			req.Driver = pool.Driver
-
-			_, err = storagePoolCreateLocal(d.State(), id, req, true)
-			if err != nil {
-				return errors.Wrap(err, "Failed to init ceph/cephfs pool for joining member")
 			}
 		}
 
@@ -737,12 +710,6 @@ func clusterInitMember(d lxd.InstanceServer, client lxd.InstanceServer, memberCo
 	for _, pool := range pools {
 		// Skip pending pools.
 		if pool.Status == "Pending" {
-			continue
-		}
-
-		// Skip ceph pools since they have no node-specific key and
-		// don't need to be defined on joining nodes.
-		if shared.StringInSlice(pool.Driver, []string{"ceph", "cephfs"}) {
 			continue
 		}
 
@@ -1564,7 +1531,7 @@ func clusterCheckStoragePoolsMatch(cluster *db.Cluster, reqPools []api.StoragePo
 				continue
 			}
 			found = true
-			_, pool, err := cluster.GetStoragePoolInAnyState(name)
+			_, pool, _, err := cluster.GetStoragePoolInAnyState(name)
 			if err != nil {
 				return err
 			}
@@ -1580,18 +1547,6 @@ func clusterCheckStoragePoolsMatch(cluster *db.Cluster, reqPools []api.StoragePo
 			break
 		}
 		if !found {
-			_, pool, err := cluster.GetStoragePoolInAnyState(name)
-			if err != nil {
-				return err
-			}
-
-			// Ignore missing ceph pools, since they'll be shared
-			// and we don't require them to be defined on the
-			// joining node.
-			if shared.StringInSlice(pool.Driver, []string{"ceph", "cephfs"}) {
-				continue
-			}
-
 			return fmt.Errorf("Missing storage pool %s", name)
 		}
 	}
@@ -1628,7 +1583,7 @@ func clusterCheckNetworksMatch(cluster *db.Cluster, reqNetworks []internalCluste
 
 				found = true
 
-				_, network, err := cluster.GetNetworkInAnyState(networkProjectName, networkName)
+				_, network, _, err := cluster.GetNetworkInAnyState(networkProjectName, networkName)
 				if err != nil {
 					return err
 				}

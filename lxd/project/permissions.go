@@ -2,6 +2,8 @@ package project
 
 import (
 	"fmt"
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -10,6 +12,7 @@ import (
 	"github.com/lxc/lxd/lxd/db"
 	deviceconfig "github.com/lxc/lxd/lxd/device/config"
 	"github.com/lxc/lxd/lxd/instance/instancetype"
+	"github.com/lxc/lxd/lxd/rbac"
 	"github.com/lxc/lxd/shared"
 	"github.com/lxc/lxd/shared/api"
 	"github.com/lxc/lxd/shared/units"
@@ -53,6 +56,12 @@ func AllowInstanceCreation(tx *db.ClusterTx, projectName string, req api.Instanc
 		return err
 	}
 
+	totalInstanceCount := len(info.Instances)
+	err = checkTotalInstanceCountLimit(info.Project, totalInstanceCount)
+	if err != nil {
+		return err
+	}
+
 	// Add the instance being created.
 	info.Instances = append(info.Instances, db.Instance{
 		Name:     req.Name,
@@ -71,6 +80,25 @@ func AllowInstanceCreation(tx *db.ClusterTx, projectName string, req api.Instanc
 	err = checkRestrictionsAndAggregateLimits(tx, info)
 	if err != nil {
 		return err
+	}
+
+	return nil
+}
+
+// Check that we have not exceeded the maximum total allotted number of instances
+// for both containers and vms
+func checkTotalInstanceCountLimit(project *api.Project, totalInstanceCount int) error {
+	overallValue, ok := project.Config["limits.instances"]
+	if ok {
+		limit, err := strconv.Atoi(overallValue)
+		if err != nil {
+			return err
+		}
+
+		if totalInstanceCount >= limit {
+			return fmt.Errorf(
+				"Reached maximum number of instances in project %q", project.Name)
+		}
 	}
 
 	return nil
@@ -125,7 +153,7 @@ func checkRestrictionsOnVolatileConfig(project *api.Project, instanceType instan
 	}
 
 	for key, value := range config {
-		if !strings.HasPrefix(key, "volatile.") {
+		if !strings.HasPrefix(key, shared.ConfigVolatilePrefix) {
 			continue
 		}
 
@@ -713,6 +741,11 @@ func AllowProjectUpdate(tx *db.ClusterTx, projectName string, config map[string]
 		}
 
 		switch key {
+		case "limits.instances":
+			err := validateTotalInstanceCountLimit(info.Instances, config[key], projectName)
+			if err != nil {
+				return errors.Wrapf(err, "Can't change limits.instances in project %q", projectName)
+			}
 		case "limits.containers":
 			fallthrough
 		case "limits.virtual-machines":
@@ -746,6 +779,26 @@ func AllowProjectUpdate(tx *db.ClusterTx, projectName string, config map[string]
 
 	}
 
+	return nil
+}
+
+// Check that limits.instances, i.e. the total limit of containers/virtual machines allocated
+// to the user is equal to or above the current count
+func validateTotalInstanceCountLimit(instances []db.Instance, value, project string) error {
+	if value == "" {
+		return nil
+	}
+
+	limit, err := strconv.Atoi(value)
+	if err != nil {
+		return err
+	}
+
+	count := len(instances)
+
+	if limit < count {
+		return fmt.Errorf("'limits.instances' is too low: there currently are %d total instances in project %s", count, project)
+	}
 	return nil
 }
 
@@ -1049,4 +1102,39 @@ var aggregateLimitConfigValuePrinters = map[string]func(int64) string{
 	"limits.disk": func(limit int64) string {
 		return units.GetByteSizeString(limit, 1)
 	},
+}
+
+// FilterUsedBy filters a UsedBy list based on project access
+func FilterUsedBy(r *http.Request, entries []string) []string {
+	// Shortcut for admins and non-RBAC environments.
+	if rbac.UserIsAdmin(r) {
+		return entries
+	}
+
+	// Filter the entries.
+	usedBy := []string{}
+	for _, entry := range entries {
+		projectName := Default
+
+		// Try to parse the query part of the URL.
+		u, err := url.Parse(entry)
+		if err != nil {
+			// Skip URLs we can't parse.
+			continue
+		}
+
+		// Check if project= is specified in the URL.
+		val := u.Query().Get("project")
+		if val != "" {
+			projectName = val
+		}
+
+		if !rbac.UserHasPermission(r, projectName, "view") {
+			continue
+		}
+
+		usedBy = append(usedBy, entry)
+	}
+
+	return usedBy
 }

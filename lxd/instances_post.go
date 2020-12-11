@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
@@ -9,7 +8,6 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 
@@ -265,7 +263,7 @@ func createFromMigration(d *Daemon, project string, req *api.InstancesPost) resp
 	revert := true
 	defer func() {
 		if revert && !req.Source.Refresh && inst != nil {
-			inst.Delete()
+			inst.Delete(true)
 		}
 	}()
 
@@ -283,7 +281,7 @@ func createFromMigration(d *Daemon, project string, req *api.InstancesPost) resp
 		// as part of the operation below.
 		inst, err = instanceCreateInternal(d.State(), args)
 		if err != nil {
-			return response.InternalError(err)
+			return response.InternalError(errors.Wrap(err, "Failed creating instance record"))
 		}
 	}
 
@@ -332,7 +330,7 @@ func createFromMigration(d *Daemon, project string, req *api.InstancesPost) resp
 		opRevert := true
 		defer func() {
 			if opRevert && !req.Source.Refresh && inst != nil {
-				inst.Delete()
+				inst.Delete(true)
 			}
 		}()
 
@@ -420,7 +418,7 @@ func createFromCopy(d *Daemon, project string, req *api.InstancesPost) response.
 				return clusterCopyContainerInternal(d, source, project, req)
 			}
 
-			_, pool, err := d.cluster.GetStoragePoolInAnyState(sourcePoolName)
+			_, pool, _, err := d.cluster.GetStoragePoolInAnyState(sourcePoolName)
 			if err != nil {
 				err = errors.Wrap(err, "Failed to fetch instance's pool info")
 				return response.SmartError(err)
@@ -440,9 +438,8 @@ func createFromCopy(d *Daemon, project string, req *api.InstancesPost) response.
 	}
 
 	for key, value := range sourceConfig {
-		if len(key) > 8 && key[0:8] == "volatile" && !shared.StringInSlice(key[9:], []string{"base_image", "last_state.idmap"}) {
-			logger.Debug("Skipping volatile key from copy source",
-				log.Ctx{"key": key})
+		if !shared.InstanceIncludeWhenCopying(key, false) {
+			logger.Debug("Skipping key from copy source", log.Ctx{"key": key, "sourceProject": source.Project(), "sourceInstance": source.Name(), "project": targetProject, "instance": req.Name})
 			continue
 		}
 
@@ -545,7 +542,7 @@ func createFromCopy(d *Daemon, project string, req *api.InstancesPost) response.
 	return operations.OperationResponse(op)
 }
 
-func createFromBackup(d *Daemon, project string, data io.Reader, pool string, instanceName string) response.Response {
+func createFromBackup(d *Daemon, projectName string, data io.Reader, pool string, instanceName string) response.Response {
 	revert := revert.New()
 	defer revert.Fail()
 
@@ -602,7 +599,7 @@ func createFromBackup(d *Daemon, project string, data io.Reader, pool string, in
 	if err != nil {
 		return response.BadRequest(err)
 	}
-	bInfo.Project = project
+	bInfo.Project = projectName
 
 	// Override pool.
 	if pool != "" {
@@ -625,7 +622,7 @@ func createFromBackup(d *Daemon, project string, data io.Reader, pool string, in
 	})
 
 	// Check storage pool exists.
-	_, _, err = d.State().Cluster.GetStoragePoolInAnyState(bInfo.Pool)
+	_, _, _, err = d.State().Cluster.GetStoragePoolInAnyState(bInfo.Pool)
 	if errors.Cause(err) == db.ErrNoSuchObject {
 		// The storage pool doesn't exist. If backup is in binary format (so we cannot alter
 		// the backup.yaml) or the pool has been specified directly from the user restoring
@@ -679,36 +676,24 @@ func createFromBackup(d *Daemon, project string, data io.Reader, pool string, in
 		}
 		runRevert.Add(revertHook)
 
-		body, err := json.Marshal(&internalImportPost{
+		req := &internalImportPost{
 			Name:              bInfo.Name,
 			Force:             true,
 			AllowNameOverride: instanceName != "",
-		})
-		if err != nil {
-			return errors.Wrap(err, "Marshal internal import request")
 		}
 
-		// Generate internal request to import instance from storage.
-		req := &http.Request{
-			Body: ioutil.NopCloser(bytes.NewReader(body)),
-		}
-
-		req.URL = &url.URL{
-			RawQuery: fmt.Sprintf("project=%s", project),
-		}
-
-		resp := internalImport(d, req)
+		resp := internalImport(d, bInfo.Project, req)
 		if resp.String() != "success" {
 			return fmt.Errorf("Internal import request: %v", resp.String())
 		}
 
-		inst, err := instance.LoadByProjectAndName(d.State(), project, bInfo.Name)
+		inst, err := instance.LoadByProjectAndName(d.State(), bInfo.Project, bInfo.Name)
 		if err != nil {
 			return errors.Wrap(err, "Load instance")
 		}
 
 		// Clean up created instance if the post hook fails below.
-		runRevert.Add(func() { inst.Delete() })
+		runRevert.Add(func() { inst.Delete(true) })
 
 		// Run the storage post hook to perform any final actions now that the instance has been created
 		// in the database (this normally includes unmounting volumes that were mounted).
@@ -727,7 +712,7 @@ func createFromBackup(d *Daemon, project string, data io.Reader, pool string, in
 	resources["instances"] = []string{bInfo.Name}
 	resources["containers"] = resources["instances"]
 
-	op, err := operations.OperationCreate(d.State(), project, operations.OperationClassTask, db.OperationBackupRestore, resources, nil, run, nil, nil)
+	op, err := operations.OperationCreate(d.State(), bInfo.Project, operations.OperationClassTask, db.OperationBackupRestore, resources, nil, run, nil, nil)
 	if err != nil {
 		return response.InternalError(err)
 	}

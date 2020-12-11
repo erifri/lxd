@@ -188,11 +188,11 @@ func VolumeContentTypeNameToContentType(contentTypeName string) (int, error) {
 		return db.StoragePoolVolumeContentTypeBlock, nil
 	}
 
-	return -1, fmt.Errorf("Invalid storage volume content type name: %s", contentTypeName)
+	return -1, fmt.Errorf("Invalid volume content type name")
 }
 
 // VolumeDBCreate creates a volume in the database.
-func VolumeDBCreate(s *state.State, project, poolName, volumeName, volumeDescription, volumeTypeName string, snapshot bool, volumeConfig map[string]string, expiryDate time.Time, contentTypeName string) error {
+func VolumeDBCreate(s *state.State, pool Pool, projectName string, volumeName string, volumeDescription string, volumeTypeName string, snapshot bool, volumeConfig map[string]string, expiryDate time.Time, contentTypeName string) error {
 	// Convert the volume type name to our internal integer representation.
 	volDBType, err := VolumeTypeNameToDBType(volumeTypeName)
 	if err != nil {
@@ -204,14 +204,8 @@ func VolumeDBCreate(s *state.State, project, poolName, volumeName, volumeDescrip
 		return err
 	}
 
-	// Load storage pool the volume will be attached to.
-	poolID, poolStruct, err := s.Cluster.GetStoragePool(poolName)
-	if err != nil {
-		return err
-	}
-
 	// Check that a storage volume of the same storage volume type does not already exist.
-	volumeID, _ := s.Cluster.GetStoragePoolNodeVolumeID(project, volumeName, volDBType, poolID)
+	volumeID, _ := s.Cluster.GetStoragePoolNodeVolumeID(projectName, volumeName, volDBType, pool.ID())
 	if volumeID > 0 {
 		return fmt.Errorf("A storage volume of type %s already exists", volumeTypeName)
 	}
@@ -226,25 +220,28 @@ func VolumeDBCreate(s *state.State, project, poolName, volumeName, volumeDescrip
 		return err
 	}
 
-	// Validate the requested storage volume configuration.
-	err = VolumeValidateConfig(s, volumeName, volType, volumeConfig, poolStruct)
+	vol := drivers.NewVolume(pool.Driver(), pool.Name(), volType, drivers.ContentType(contentTypeName), volumeName, volumeConfig, pool.Driver().Config())
+
+	// Fill default config.
+	err = pool.Driver().FillVolumeConfig(vol)
 	if err != nil {
 		return err
 	}
 
-	err = VolumeFillDefault(volumeConfig, poolStruct)
+	// Validate config.
+	err = pool.Driver().ValidateVolume(vol, false)
 	if err != nil {
 		return err
 	}
 
 	// Create the database entry for the storage volume.
 	if snapshot {
-		_, err = s.Cluster.CreateStorageVolumeSnapshot(project, volumeName, volumeDescription, volDBType, poolID, volumeConfig, expiryDate)
+		_, err = s.Cluster.CreateStorageVolumeSnapshot(projectName, volumeName, volumeDescription, volDBType, pool.ID(), vol.Config(), expiryDate)
 	} else {
-		_, err = s.Cluster.CreateStoragePoolVolume(project, volumeName, volumeDescription, volDBType, poolID, volumeConfig, volDBContentType)
+		_, err = s.Cluster.CreateStoragePoolVolume(projectName, volumeName, volumeDescription, volDBType, pool.ID(), vol.Config(), volDBContentType)
 	}
 	if err != nil {
-		return fmt.Errorf("Error inserting %q of type %q into database %q", poolName, volumeTypeName, err)
+		return fmt.Errorf("Error inserting %q of type %q into database %q", pool.Name(), volumeTypeName, err)
 	}
 
 	return nil
@@ -310,83 +307,6 @@ var StorageVolumeConfigKeys = map[string]func(value string) ([]string, error){
 	},
 }
 
-// VolumeValidateConfig validations volume config. Deprecated.
-func VolumeValidateConfig(s *state.State, volName string, volType drivers.VolumeType, config map[string]string, parentPool *api.StoragePool) error {
-	logger := logging.AddContext(logger.Log, log.Ctx{"driver": parentPool.Driver, "pool": parentPool.Name})
-
-	// Validate volume config using the new driver interface if supported.
-	driver, err := drivers.Load(s, parentPool.Driver, parentPool.Name, parentPool.Config, logger, nil, commonRules())
-	if err != drivers.ErrUnknownDriver {
-		// Note: This legacy validation function doesn't have the concept of validating different content
-		// types, so it is hardcoded as ContentTypeFS.
-		return driver.ValidateVolume(drivers.NewVolume(driver, parentPool.Name, volType, drivers.ContentTypeFS, volName, config, parentPool.Config), false)
-	}
-
-	// Otherwise fallback to doing legacy validation.
-	for key, val := range config {
-		// User keys are not validated.
-		if strings.HasPrefix(key, "user.") {
-			continue
-		}
-
-		// Validate storage volume config keys.
-		validator, ok := StorageVolumeConfigKeys[key]
-		if !ok {
-			return fmt.Errorf("Invalid storage volume configuration key: %s", key)
-		}
-
-		_, err := validator(val)
-		if err != nil {
-			return err
-		}
-
-		if parentPool.Driver != "zfs" || parentPool.Driver == "dir" {
-			if config["zfs.use_refquota"] != "" {
-				return fmt.Errorf("the key volume.zfs.use_refquota cannot be used with non zfs storage volumes")
-			}
-
-			if config["zfs.remove_snapshots"] != "" {
-				return fmt.Errorf("the key volume.zfs.remove_snapshots cannot be used with non zfs storage volumes")
-			}
-		}
-
-		if parentPool.Driver == "dir" {
-			if config["block.mount_options"] != "" {
-				return fmt.Errorf("the key block.mount_options cannot be used with dir storage volumes")
-			}
-
-			if config["block.filesystem"] != "" {
-				return fmt.Errorf("the key block.filesystem cannot be used with dir storage volumes")
-			}
-		}
-	}
-
-	return nil
-}
-
-// VolumeFillDefault fills default settings into a volume config.
-func VolumeFillDefault(config map[string]string, parentPool *api.StoragePool) error {
-	if parentPool.Driver == "lvm" || parentPool.Driver == "ceph" {
-		if config["block.filesystem"] == "" {
-			config["block.filesystem"] = parentPool.Config["volume.block.filesystem"]
-		}
-		if config["block.filesystem"] == "" {
-			// Unchangeable volume property: Set unconditionally.
-			config["block.filesystem"] = drivers.DefaultFilesystem
-		}
-
-		if config["block.mount_options"] == "" {
-			config["block.mount_options"] = parentPool.Config["volume.block.mount_options"]
-		}
-		if config["block.mount_options"] == "" {
-			// Unchangeable volume property: Set unconditionally.
-			config["block.mount_options"] = "discard"
-		}
-	}
-
-	return nil
-}
-
 // VolumeSnapshotsGet returns a list of snapshots of the form <volume>/<snapshot-name>.
 func VolumeSnapshotsGet(s *state.State, projectName string, pool string, volume string, volType int) ([]db.StorageVolumeArgs, error) {
 	poolID, err := s.Cluster.GetStoragePoolID(pool)
@@ -449,13 +369,9 @@ func validatePoolCommonRules() map[string]func(string) error {
 // validateVolumeCommonRules returns a map of volume config rules common to all drivers.
 func validateVolumeCommonRules(vol drivers.Volume) map[string]func(string) error {
 	rules := map[string]func(string) error{
-		"volatile.idmap.last": validate.IsAny,
-		"volatile.idmap.next": validate.IsAny,
-
 		// Note: size should not be modifiable for non-custom volumes and should be checked
 		// in the relevant volume update functions.
 		"size": validate.Optional(validate.IsSize),
-
 		"snapshots.expiry": func(value string) error {
 			// Validate expression
 			_, err := shared.GetSnapshotExpiry(time.Time{}, value)
@@ -480,18 +396,25 @@ func validateVolumeCommonRules(vol drivers.Volume) map[string]func(string) error
 		"snapshots.pattern": validate.IsAny,
 	}
 
-	// block.mount_options is only relevant for drivers that are block backed and when there
-	// is a filesystem to actually mount.
-	if vol.IsBlockBacked() && vol.ContentType() == drivers.ContentTypeFS {
+	// volatile.idmap settings only make sense for filesystem volumes.
+	if vol.ContentType() == drivers.ContentTypeFS {
+		rules["volatile.idmap.last"] = validate.IsAny
+		rules["volatile.idmap.next"] = validate.IsAny
+	}
+
+	// block.mount_options and block.filesystem settings are only relevant for drivers that are block backed
+	// and when there is a filesystem to actually mount. This includes filesystem volumes and VM Block volumes,
+	// as they have an associated config filesystem volume that shares the config.
+	if vol.IsBlockBacked() && (vol.ContentType() == drivers.ContentTypeFS || vol.IsVMBlock()) {
 		rules["block.mount_options"] = validate.IsAny
 
-		// Note: block.filesystem should not be modifiable after volume created. This should
-		// be checked in the relevant volume update functions.
+		// Note: block.filesystem should not be modifiable after volume created.
+		// This should be checked in the relevant volume update functions.
 		rules["block.filesystem"] = validate.IsAny
 	}
 
-	// security.shifted and security.unmapped are only relevant for custom volumes.
-	if vol.Type() == drivers.VolumeTypeCustom {
+	// security.shifted and security.unmapped are only relevant for custom filesystem volumes.
+	if vol.Type() == drivers.VolumeTypeCustom && vol.ContentType() == drivers.ContentTypeFS {
 		rules["security.shifted"] = validate.Optional(validate.IsBool)
 		rules["security.unmapped"] = validate.Optional(validate.IsBool)
 	}
@@ -589,28 +512,28 @@ func ImageUnpack(imageFile string, vol drivers.Volume, destBlockFile string, blo
 			return -1, fmt.Errorf("Unexpected image format %q", imgInfo.Format)
 		}
 
+		// Check whether image is allowed to be unpacked into pool volume. Create a partial image volume
+		// struct and then use it to check that target volume size can be set as needed.
+		imgVolConfig := map[string]string{
+			"volatile.rootfs.size": fmt.Sprintf("%d", imgInfo.VirtualSize),
+		}
+		imgVol := drivers.NewVolume(nil, "", drivers.VolumeTypeImage, drivers.ContentTypeBlock, "", imgVolConfig, nil)
+
+		logger.Debug("Checking image unpack size")
+		newVolSize, err := vol.ConfigSizeFromSource(imgVol)
+		if err != nil {
+			return -1, err
+		}
+
 		if shared.PathExists(dstPath) {
 			volSizeBytes, err := drivers.BlockDiskSizeBytes(dstPath)
 			if err != nil {
 				return -1, errors.Wrapf(err, "Error getting current size of %q", dstPath)
 			}
 
+			// If the target volume's size is smaller than the image unpack size, then we need to
+			// increase the target volume's size.
 			if volSizeBytes < imgInfo.VirtualSize {
-				// If the target volume's size is smaller than the image unpack size, then we need
-				// to check whether it is inline with the pool's settings to allow us to increase
-				// the target volume's size. Create a partial image volume struct and then use it
-				// to check that target volume size can be set as needed.
-				imgVolConfig := map[string]string{
-					"volatile.rootfs.size": fmt.Sprintf("%d", imgInfo.VirtualSize),
-				}
-				imgVol := drivers.NewVolume(nil, "", drivers.VolumeTypeImage, drivers.ContentTypeBlock, "", imgVolConfig, nil)
-
-				logger.Debug("Checking image unpack size")
-				newVolSize, err := vol.ConfigSizeFromSource(imgVol)
-				if err != nil {
-					return -1, err
-				}
-
 				logger.Debug("Increasing volume size", log.Ctx{"imgPath": imgPath, "dstPath": dstPath, "oldSize": volSizeBytes, "newSize": newVolSize})
 				err = vol.SetQuota(newVolSize, nil)
 				if err != nil {
@@ -944,31 +867,49 @@ func RenderSnapshotUsage(s *state.State, snapInst instance.Instance) func(respon
 	}
 }
 
-// InstanceDiskBlockSize returns the block device size for the instance's disk.
-// This will mount the instance if not already mounted and will unmount at the end if needed.
-func InstanceDiskBlockSize(pool Pool, inst instance.Instance, op *operations.Operation) (int64, error) {
+// InstanceMount mounts an instance's storage volume (if not already mounted).
+// Please call InstanceUnmount when finished.
+func InstanceMount(pool Pool, inst instance.Instance, op *operations.Operation) (*MountInfo, error) {
 	var err error
 	var mountInfo *MountInfo
 
 	if inst.IsSnapshot() {
 		mountInfo, err = pool.MountInstanceSnapshot(inst, op)
 		if err != nil {
-			return -1, err
-		}
-
-		if mountInfo.OurMount {
-			defer pool.UnmountInstanceSnapshot(inst, op)
+			return nil, err
 		}
 	} else {
 		mountInfo, err = pool.MountInstance(inst, op)
 		if err != nil {
-			return -1, err
-		}
-
-		if mountInfo.OurMount {
-			defer pool.UnmountInstance(inst, op)
+			return nil, err
 		}
 	}
+
+	return mountInfo, nil
+}
+
+// InstanceUnmount unmounts an instance's storage volume (if not in use). Returns if we unmounted the volume.
+func InstanceUnmount(pool Pool, inst instance.Instance, op *operations.Operation) (bool, error) {
+	var err error
+	var ourUnmount bool
+
+	if inst.IsSnapshot() {
+		ourUnmount, err = pool.UnmountInstanceSnapshot(inst, op)
+	} else {
+		ourUnmount, err = pool.UnmountInstance(inst, op)
+	}
+
+	return ourUnmount, err
+}
+
+// InstanceDiskBlockSize returns the block device size for the instance's disk.
+// This will mount the instance if not already mounted and will unmount at the end if needed.
+func InstanceDiskBlockSize(pool Pool, inst instance.Instance, op *operations.Operation) (int64, error) {
+	mountInfo, err := InstanceMount(pool, inst, op)
+	if err != nil {
+		return -1, err
+	}
+	defer InstanceUnmount(pool, inst, op)
 
 	if mountInfo.DiskPath == "" {
 		return -1, fmt.Errorf("No disk path available from mount")

@@ -6,7 +6,7 @@ import (
 
 	"github.com/pkg/errors"
 
-	"github.com/lxc/lxd/lxd/cluster"
+	"github.com/lxc/lxd/lxd/cluster/request"
 	"github.com/lxc/lxd/lxd/db"
 	"github.com/lxc/lxd/lxd/project"
 	"github.com/lxc/lxd/lxd/revert"
@@ -34,18 +34,23 @@ func (n *physical) DBType() db.NetworkType {
 // Validate network config.
 func (n *physical) Validate(config map[string]string) error {
 	rules := map[string]func(value string) error{
-		"parent":                      validate.Required(validate.IsNotEmpty, validInterfaceName),
-		"mtu":                         validate.Optional(validate.IsNetworkMTU),
-		"vlan":                        validate.Optional(validate.IsNetworkVLAN),
-		"maas.subnet.ipv4":            validate.IsAny,
-		"maas.subnet.ipv6":            validate.IsAny,
-		"ipv4.gateway":                validate.Optional(validate.IsNetworkAddressCIDRV4),
-		"ipv6.gateway":                validate.Optional(validate.IsNetworkAddressCIDRV6),
-		"ipv4.ovn.ranges":             validate.Optional(validate.IsNetworkRangeV4List),
-		"ipv6.ovn.ranges":             validate.Optional(validate.IsNetworkRangeV6List),
-		"ipv4.routes":                 validate.Optional(validate.IsNetworkV4List),
-		"ipv6.routes":                 validate.Optional(validate.IsNetworkV6List),
-		"dns.nameservers":             validate.Optional(validate.IsNetworkAddressList),
+		"parent":              validate.Required(validate.IsNotEmpty, validInterfaceName),
+		"mtu":                 validate.Optional(validate.IsNetworkMTU),
+		"vlan":                validate.Optional(validate.IsNetworkVLAN),
+		"maas.subnet.ipv4":    validate.IsAny,
+		"maas.subnet.ipv6":    validate.IsAny,
+		"ipv4.gateway":        validate.Optional(validate.IsNetworkAddressCIDRV4),
+		"ipv6.gateway":        validate.Optional(validate.IsNetworkAddressCIDRV6),
+		"ipv4.ovn.ranges":     validate.Optional(validate.IsNetworkRangeV4List),
+		"ipv6.ovn.ranges":     validate.Optional(validate.IsNetworkRangeV6List),
+		"ipv4.routes":         validate.Optional(validate.IsNetworkV4List),
+		"ipv4.routes.anycast": validate.Optional(validate.IsBool),
+		"ipv6.routes":         validate.Optional(validate.IsNetworkV6List),
+		"ipv6.routes.anycast": validate.Optional(validate.IsBool),
+		"dns.nameservers":     validate.Optional(validate.IsNetworkAddressList),
+		"ovn.ingress_mode": validate.Optional(func(value string) error {
+			return validate.IsOneOf(value, []string{"l2proxy", "routed"})
+		}),
 		"volatile.last_state.created": validate.Optional(validate.IsBool),
 	}
 
@@ -97,11 +102,11 @@ func (n *physical) checkParentUse(ourConfig map[string]string) (bool, error) {
 
 // Create checks whether the referenced parent interface is used by other networks or instance devices, as we
 // need to have exclusive access to the interface.
-func (n *physical) Create(clientType cluster.ClientType) error {
+func (n *physical) Create(clientType request.ClientType) error {
 	n.logger.Debug("Create", log.Ctx{"clientType": clientType, "config": n.config})
 
 	// We only need to check in the database once, not on every clustered node.
-	if clientType == cluster.ClientTypeNormal {
+	if clientType == request.ClientTypeNormal {
 		inUse, err := n.checkParentUse(n.config)
 		if err != nil {
 			return err
@@ -111,11 +116,11 @@ func (n *physical) Create(clientType cluster.ClientType) error {
 		}
 	}
 
-	return nil
+	return n.common.create(clientType)
 }
 
 // Delete deletes a network.
-func (n *physical) Delete(clientType cluster.ClientType) error {
+func (n *physical) Delete(clientType request.ClientType) error {
 	n.logger.Debug("Delete", log.Ctx{"clientType": clientType})
 
 	err := n.Stop()
@@ -142,10 +147,6 @@ func (n *physical) Rename(newName string) error {
 // Start starts is a no-op.
 func (n *physical) Start() error {
 	n.logger.Debug("Start")
-
-	if n.status == api.NetworkStatusPending {
-		return fmt.Errorf("Cannot start pending network")
-	}
 
 	revert := revert.New()
 	defer revert.Fail()
@@ -219,7 +220,7 @@ func (n *physical) Stop() error {
 
 // Update updates the network. Accepts notification boolean indicating if this update request is coming from a
 // cluster notification, in which case do not update the database, just apply local changes needed.
-func (n *physical) Update(newNetwork api.NetworkPut, targetNode string, clientType cluster.ClientType) error {
+func (n *physical) Update(newNetwork api.NetworkPut, targetNode string, clientType request.ClientType) error {
 	n.logger.Debug("Update", log.Ctx{"clientType": clientType, "newNetwork": newNetwork})
 
 	dbUpdateNeeeded, changedKeys, oldNetwork, err := n.common.configChanged(newNetwork)
@@ -231,13 +232,18 @@ func (n *physical) Update(newNetwork api.NetworkPut, targetNode string, clientTy
 		return nil // Nothing changed.
 	}
 
+	if n.LocalStatus() == api.NetworkStatusPending {
+		// Apply DB change to local node only.
+		return n.common.update(newNetwork, targetNode, clientType)
+	}
+
 	revert := revert.New()
 	defer revert.Fail()
 
 	hostNameChanged := shared.StringInSlice("vlan", changedKeys) || shared.StringInSlice("parent", changedKeys)
 
 	// We only need to check in the database once, not on every clustered node.
-	if clientType == cluster.ClientTypeNormal {
+	if clientType == request.ClientTypeNormal {
 		if hostNameChanged {
 			isUsed, err := n.IsUsed()
 			if isUsed || err != nil {

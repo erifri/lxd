@@ -1,6 +1,7 @@
 package qmp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -111,7 +112,7 @@ func (m *Monitor) run() error {
 	}
 
 	// Start event monitoring go routine.
-	chEvents, err := m.qmp.Events()
+	chEvents, err := m.qmp.Events(context.Background())
 	if err != nil {
 		return err
 	}
@@ -130,12 +131,12 @@ func (m *Monitor) run() error {
 					continue
 				}
 
+				if m.eventHandler != nil {
+					go m.eventHandler(e.Event, e.Data)
+				}
+
 				// Check if the ringbuffer was updated (non-blocking).
 				go checkBuffer()
-
-				if m.eventHandler != nil {
-					m.eventHandler(e.Event, e.Data)
-				}
 			case <-time.After(10 * time.Second):
 				// Check if the ringbuffer was updated (non-blocking).
 				go checkBuffer()

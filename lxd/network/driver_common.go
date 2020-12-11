@@ -3,6 +3,7 @@ package network
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strings"
 
@@ -10,7 +11,9 @@ import (
 
 	lxd "github.com/lxc/lxd/client"
 	"github.com/lxc/lxd/lxd/cluster"
+	"github.com/lxc/lxd/lxd/cluster/request"
 	"github.com/lxc/lxd/lxd/db"
+	"github.com/lxc/lxd/lxd/project"
 	"github.com/lxc/lxd/lxd/state"
 	"github.com/lxc/lxd/shared"
 	"github.com/lxc/lxd/shared/api"
@@ -36,18 +39,22 @@ type common struct {
 	description string
 	config      map[string]string
 	status      string
+	managed     bool
+	nodes       map[int64]db.NetworkNode
 }
 
 // init initialise internal variables.
-func (n *common) init(state *state.State, id int64, projectName string, name string, netType string, description string, config map[string]string, status string) {
-	n.logger = logging.AddContext(logger.Log, log.Ctx{"project": projectName, "driver": netType, "network": name})
+func (n *common) init(state *state.State, id int64, projectName string, netInfo *api.Network, netNodes map[int64]db.NetworkNode) {
+	n.logger = logging.AddContext(logger.Log, log.Ctx{"project": projectName, "driver": netInfo.Type, "network": netInfo.Name})
 	n.id = id
 	n.project = projectName
-	n.name = name
-	n.config = config
+	n.name = netInfo.Name
+	n.config = netInfo.Config
 	n.state = state
-	n.description = description
-	n.status = status
+	n.description = netInfo.Description
+	n.status = netInfo.Status
+	n.managed = netInfo.Managed
+	n.nodes = netNodes
 }
 
 // FillConfig fills requested config with any default values, by default this is a no-op.
@@ -123,6 +130,11 @@ func (n *common) Name() string {
 	return n.name
 }
 
+// Project returns the network project.
+func (n *common) Project() string {
+	return n.project
+}
+
 // Description returns the network description.
 func (n *common) Description() string {
 	return n.description
@@ -133,9 +145,23 @@ func (n *common) Status() string {
 	return n.status
 }
 
+// LocalStatus returns network status of the local cluster member.
+func (n *common) LocalStatus() string {
+	node, exists := n.nodes[n.state.Cluster.GetNodeID()]
+	if !exists {
+		return api.NetworkStatusUnknown
+	}
+
+	return db.NetworkStateToAPIStatus(node.State)
+}
+
 // Config returns the network config.
 func (n *common) Config() map[string]string {
 	return n.config
+}
+
+func (n *common) IsManaged() bool {
+	return n.managed
 }
 
 // Config returns the common network driver info.
@@ -207,7 +233,7 @@ func (n *common) DHCPv6Ranges() []shared.IPRange {
 }
 
 // update the internal config variables, and if not cluster notification, notifies all nodes and updates database.
-func (n *common) update(applyNetwork api.NetworkPut, targetNode string, clientType cluster.ClientType) error {
+func (n *common) update(applyNetwork api.NetworkPut, targetNode string, clientType request.ClientType) error {
 	// Update internal config before database has been updated (so that if update is a notification we apply
 	// the config being supplied and not that in the database).
 	n.description = applyNetwork.Description
@@ -215,7 +241,7 @@ func (n *common) update(applyNetwork api.NetworkPut, targetNode string, clientTy
 
 	// If this update isn't coming via a cluster notification itself, then notify all nodes of change and then
 	// update the database.
-	if clientType != cluster.ClientTypeNotifier {
+	if clientType != request.ClientTypeNotifier {
 		if targetNode == "" {
 			// Notify all other nodes to update the network if no target specified.
 			notifier, err := cluster.NewNotifier(n.state, n.state.Endpoints.NetworkCert(), cluster.NotifyAll)
@@ -247,6 +273,8 @@ func (n *common) update(applyNetwork api.NetworkPut, targetNode string, clientTy
 		if err != nil {
 			return err
 		}
+
+		n.lifecycle("updated", nil)
 	}
 
 	return nil
@@ -300,6 +328,15 @@ func (n *common) configChanged(newNetwork api.NetworkPut) (bool, []string, api.N
 	return dbUpdateNeeded, changedKeys, oldNetwork, nil
 }
 
+// create just sends the needed lifecycle event.
+func (n *common) create(clientType request.ClientType) error {
+	if clientType == request.ClientTypeNormal {
+		n.lifecycle("created", nil)
+	}
+
+	return nil
+}
+
 // rename the network directory, update database record and update internal variables.
 func (n *common) rename(newName string) error {
 	// Clear new directory if exists.
@@ -322,50 +359,48 @@ func (n *common) rename(newName string) error {
 	}
 
 	// Reinitialise internal name variable and logger context with new name.
+	oldName := n.name
 	n.name = newName
 
+	n.lifecycle("renamed", map[string]interface{}{"old_name": oldName})
 	return nil
 }
 
 // delete the network from the database if clusterNotification is false.
-func (n *common) delete(clientType cluster.ClientType) error {
-	// Only delete database record if not cluster notification.
-	if clientType != cluster.ClientTypeNotifier {
-		// Notify all other nodes. If any node is down, an error will be returned.
-		notifier, err := cluster.NewNotifier(n.state, n.state.Endpoints.NetworkCert(), cluster.NotifyAll)
-		if err != nil {
-			return err
-		}
-		err = notifier(func(client lxd.InstanceServer) error {
-			return client.UseProject(n.project).DeleteNetwork(n.name)
-		})
-		if err != nil {
-			return err
-		}
-
-		// Remove the network from the database.
-		err = n.state.Cluster.DeleteNetwork(n.project, n.name)
-		if err != nil {
-			return err
-		}
-	}
-
+func (n *common) delete(clientType request.ClientType) error {
 	// Cleanup storage.
 	if shared.PathExists(shared.VarPath("networks", n.name)) {
 		os.RemoveAll(shared.VarPath("networks", n.name))
+	}
+
+	// Generate lifecycle event if not notification.
+	if clientType != request.ClientTypeNotifier {
+		n.lifecycle("deleted", nil)
 	}
 
 	return nil
 }
 
 // Create is a no-op.
-func (n *common) Create(clientType cluster.ClientType) error {
+func (n *common) Create(clientType request.ClientType) error {
 	n.logger.Debug("Create", log.Ctx{"clientType": clientType, "config": n.config})
 
-	return nil
+	return n.create(clientType)
 }
 
 // HandleHeartbeat is a no-op.
 func (n *common) HandleHeartbeat(heartbeatData *cluster.APIHeartbeat) error {
 	return nil
+}
+
+// lifecycle sends a lifecycle event for the network.
+func (n *common) lifecycle(action string, ctx map[string]interface{}) error {
+	prefix := "network"
+	u := fmt.Sprintf("/1.0/networks/%s", url.PathEscape(n.name))
+
+	if n.project != project.Default {
+		u = fmt.Sprintf("%s?project=%s", u, url.QueryEscape(n.project))
+	}
+
+	return n.state.Events.SendLifecycle(n.project, fmt.Sprintf("%s-%s", prefix, action), u, ctx)
 }

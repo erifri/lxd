@@ -365,8 +365,64 @@ test_clustering_storage() {
   # The state of the preseeded storage pool is still CREATED
   LXD_DIR="${LXD_ONE_DIR}" lxc storage list | grep data | grep -q CREATED
 
+  # Check both nodes show preseeded storage pool created.
+  LXD_DIR="${LXD_ONE_DIR}" lxd sql global "SELECT nodes.name,storage_pools_nodes.state FROM nodes JOIN storage_pools_nodes ON storage_pools_nodes.node_id = nodes.id JOIN storage_pools ON storage_pools.id = storage_pools_nodes.storage_pool_id WHERE storage_pools.name = 'data' AND nodes.name = 'node1'" | grep "| node1 | 1     |"
+  LXD_DIR="${LXD_ONE_DIR}" lxd sql global "SELECT nodes.name,storage_pools_nodes.state FROM nodes JOIN storage_pools_nodes ON storage_pools_nodes.node_id = nodes.id JOIN storage_pools ON storage_pools.id = storage_pools_nodes.storage_pool_id WHERE storage_pools.name = 'data' AND nodes.name = 'node2'" | grep "| node2 | 1     |"
+
   # Trying to pass config values other than 'source' results in an error
   ! LXD_DIR="${LXD_ONE_DIR}" lxc storage create pool1 dir source=/foo size=123 --target node1 || false
+
+  # Test storage pool node state tracking using a dir pool.
+  if [ "${driver}" = "dir" ]; then
+    # Create pending nodes.
+    LXD_DIR="${LXD_ONE_DIR}" lxc storage create pool1 "${driver}" --target node1
+    LXD_DIR="${LXD_TWO_DIR}" lxc storage create pool1 "${driver}" --target node2
+    LXD_DIR="${LXD_ONE_DIR}" lxd sql global "SELECT nodes.name,storage_pools_nodes.state FROM nodes JOIN storage_pools_nodes ON storage_pools_nodes.node_id = nodes.id JOIN storage_pools ON storage_pools.id = storage_pools_nodes.storage_pool_id WHERE storage_pools.name = 'pool1' AND nodes.name = 'node1'" | grep "| node1 | 0     |"
+    LXD_DIR="${LXD_ONE_DIR}" lxd sql global "SELECT nodes.name,storage_pools_nodes.state FROM nodes JOIN storage_pools_nodes ON storage_pools_nodes.node_id = nodes.id JOIN storage_pools ON storage_pools.id = storage_pools_nodes.storage_pool_id WHERE storage_pools.name = 'pool1' AND nodes.name = 'node2'" | grep "| node2 | 0     |"
+
+    # Modify first pending node with invalid config and check it fails and all nodes are pending.
+    LXD_DIR="${LXD_ONE_DIR}" lxc storage set pool1 source=/tmp/not/exist --target node1
+    ! LXD_DIR="${LXD_ONE_DIR}" lxc storage create pool1 "${driver}" || false
+    LXD_DIR="${LXD_ONE_DIR}" lxd sql global "SELECT nodes.name,storage_pools_nodes.state FROM nodes JOIN storage_pools_nodes ON storage_pools_nodes.node_id = nodes.id JOIN storage_pools ON storage_pools.id = storage_pools_nodes.storage_pool_id WHERE storage_pools.name = 'pool1' AND nodes.name = 'node1'" | grep "| node1 | 0     |"
+    LXD_DIR="${LXD_ONE_DIR}" lxd sql global "SELECT nodes.name,storage_pools_nodes.state FROM nodes JOIN storage_pools_nodes ON storage_pools_nodes.node_id = nodes.id JOIN storage_pools ON storage_pools.id = storage_pools_nodes.storage_pool_id WHERE storage_pools.name = 'pool1' AND nodes.name = 'node2'" | grep "| node2 | 0     |"
+
+    # Run create on second node, so it succeeds and then fails notifying first node.
+    ! LXD_DIR="${LXD_TWO_DIR}" lxc storage create pool1 "${driver}" || false
+    LXD_DIR="${LXD_ONE_DIR}" lxd sql global "SELECT nodes.name,storage_pools_nodes.state FROM nodes JOIN storage_pools_nodes ON storage_pools_nodes.node_id = nodes.id JOIN storage_pools ON storage_pools.id = storage_pools_nodes.storage_pool_id WHERE storage_pools.name = 'pool1' AND nodes.name = 'node1'" | grep "| node1 | 0     |"
+    LXD_DIR="${LXD_ONE_DIR}" lxd sql global "SELECT nodes.name,storage_pools_nodes.state FROM nodes JOIN storage_pools_nodes ON storage_pools_nodes.node_id = nodes.id JOIN storage_pools ON storage_pools.id = storage_pools_nodes.storage_pool_id WHERE storage_pools.name = 'pool1' AND nodes.name = 'node2'" | grep "| node2 | 1     |"
+
+    # Check we cannot update global config while in pending state.
+    ! LXD_DIR="${LXD_ONE_DIR}" lxc storage set pool1 rsync.bwlimit 10 || false
+    ! LXD_DIR="${LXD_TWO_DIR}" lxc storage set pool1 rsync.bwlimit 10 || false
+
+    # Check can delete pending pool and created nodes are cleaned up.
+    LXD_DIR="${LXD_TWO_DIR}" lxc storage show pool1 --target=node2
+    LXD_TWO_SOURCE="$(LXD_DIR="${LXD_TWO_DIR}" lxc storage get pool1 source --target=node2)"
+    stat "${LXD_TWO_SOURCE}/containers"
+    LXD_DIR="${LXD_ONE_DIR}" lxc storage delete pool1
+    ! stat "${LXD_TWO_SOURCE}/containers" || false
+
+    # Create new partially created pool and check we can fix it.
+    LXD_DIR="${LXD_ONE_DIR}" lxc storage create pool1 "${driver}" source=/tmp/not/exist --target node1
+    LXD_DIR="${LXD_TWO_DIR}" lxc storage create pool1 "${driver}" --target node2
+    ! LXD_DIR="${LXD_TWO_DIR}" lxc storage create pool1 "${driver}" || false
+    LXD_DIR="${LXD_ONE_DIR}" lxc storage show pool1 | grep status: | grep -q Pending
+    LXD_DIR="${LXD_ONE_DIR}" lxc storage unset pool1 source --target node1
+    LXD_DIR="${LXD_TWO_DIR}" lxc storage create pool1 "${driver}"
+    LXD_ONE_SOURCE="$(LXD_DIR="${LXD_ONE_DIR}" lxc storage get pool1 source --target=node1)"
+    LXD_TWO_SOURCE="$(LXD_DIR="${LXD_TWO_DIR}" lxc storage get pool1 source --target=node2)"
+    stat "${LXD_ONE_SOURCE}/containers"
+    stat "${LXD_TWO_SOURCE}/containers"
+
+    # Check both nodes marked created.
+    LXD_DIR="${LXD_ONE_DIR}" lxd sql global "SELECT nodes.name,storage_pools_nodes.state FROM nodes JOIN storage_pools_nodes ON storage_pools_nodes.node_id = nodes.id JOIN storage_pools ON storage_pools.id = storage_pools_nodes.storage_pool_id WHERE storage_pools.name = 'pool1' AND nodes.name = 'node1'" | grep "| node1 | 1     |"
+    LXD_DIR="${LXD_ONE_DIR}" lxd sql global "SELECT nodes.name,storage_pools_nodes.state FROM nodes JOIN storage_pools_nodes ON storage_pools_nodes.node_id = nodes.id JOIN storage_pools ON storage_pools.id = storage_pools_nodes.storage_pool_id WHERE storage_pools.name = 'pool1' AND nodes.name = 'node2'" | grep "| node2 | 1     |"
+
+    # Delete pool and check cleaned up.
+    LXD_DIR="${LXD_TWO_DIR}" lxc storage delete pool1
+    ! stat "${LXD_ONE_SOURCE}/containers" || false
+    ! stat "${LXD_TWO_SOURCE}/containers" || false
+  fi
 
   # Define storage pools on the two nodes
   driver_config=""
@@ -731,6 +787,10 @@ test_clustering_network() {
   # The state of the preseeded network is still CREATED
   LXD_DIR="${LXD_ONE_DIR}" lxc network list| grep "${bridge}" | grep -q CREATED
 
+  # Check both nodes show network created.
+  LXD_DIR="${LXD_ONE_DIR}" lxd sql global "SELECT nodes.name,networks_nodes.state FROM nodes JOIN networks_nodes ON networks_nodes.node_id = nodes.id JOIN networks ON networks.id = networks_nodes.network_id WHERE networks.name = '${bridge}' AND nodes.name = 'node1'" | grep "| node1 | 1     |"
+  LXD_DIR="${LXD_ONE_DIR}" lxd sql global "SELECT nodes.name,networks_nodes.state FROM nodes JOIN networks_nodes ON networks_nodes.node_id = nodes.id JOIN networks ON networks.id = networks_nodes.network_id WHERE networks.name = '${bridge}' AND nodes.name = 'node2'" | grep "| node2 | 1     |"
+
   # Trying to pass config values other than
   # 'bridge.external_interfaces' results in an error
   ! LXD_DIR="${LXD_ONE_DIR}" lxc network create foo ipv4.address=auto --target node1 || false
@@ -766,6 +826,74 @@ test_clustering_network() {
   # Delete the networks
   LXD_DIR="${LXD_TWO_DIR}" lxc network delete "${net}"
   LXD_DIR="${LXD_TWO_DIR}" lxc network delete "${bridge}"
+
+  LXD_PID1="$(LXD_DIR="${LXD_ONE_DIR}" lxc query /1.0 | jq .environment.server_pid)"
+  LXD_PID2="$(LXD_DIR="${LXD_TWO_DIR}" lxc query /1.0 | jq .environment.server_pid)"
+
+  # Test network create partial failures.
+  nsenter -n -t "${LXD_PID1}" -- ip link add "${net}" type dummy # Create dummy interface to conflict with network.
+  LXD_DIR="${LXD_ONE_DIR}" lxc network create "${net}" --target node1
+  LXD_DIR="${LXD_ONE_DIR}" lxc network create "${net}" --target node2
+
+  # Run network create on other node1 (expect this to fail early due to existing interface).
+  ! LXD_DIR="${LXD_ONE_DIR}" lxc network create "${net}" || false
+  LXD_DIR="${LXD_ONE_DIR}" lxc network show "${net}" | grep status: | grep -q Pending # Check is still pending.
+
+  # Check each node status (expect both node1 and node2 to be pending as local node running created failed first).
+  LXD_DIR="${LXD_ONE_DIR}" lxd sql global "SELECT nodes.name,networks_nodes.state FROM nodes JOIN networks_nodes ON networks_nodes.node_id = nodes.id JOIN networks ON networks.id = networks_nodes.network_id WHERE networks.name = '${net}' AND nodes.name = 'node1'" | grep "| node1 | 0     |"
+  LXD_DIR="${LXD_ONE_DIR}" lxd sql global "SELECT nodes.name,networks_nodes.state FROM nodes JOIN networks_nodes ON networks_nodes.node_id = nodes.id JOIN networks ON networks.id = networks_nodes.network_id WHERE networks.name = '${net}' AND nodes.name = 'node2'" | grep "| node2 | 0     |"
+
+  # Run network create on other node2 (still excpect to fail on node1, but expect node2 create to succeed).
+  ! LXD_DIR="${LXD_TWO_DIR}" lxc network create "${net}" || false
+
+  # Check each node status (expect node1 to be pending and node2 to be created).
+  LXD_DIR="${LXD_ONE_DIR}" lxd sql global "SELECT nodes.name,networks_nodes.state FROM nodes JOIN networks_nodes ON networks_nodes.node_id = nodes.id JOIN networks ON networks.id = networks_nodes.network_id WHERE networks.name = '${net}' AND nodes.name = 'node1'" | grep "| node1 | 0     |"
+  LXD_DIR="${LXD_ONE_DIR}" lxd sql global "SELECT nodes.name,networks_nodes.state FROM nodes JOIN networks_nodes ON networks_nodes.node_id = nodes.id JOIN networks ON networks.id = networks_nodes.network_id WHERE networks.name = '${net}' AND nodes.name = 'node2'" | grep "| node2 | 1     |"
+
+  # Check interfaces are expected types (dummy on node1 and bridge on node2).
+  nsenter -n -t "${LXD_PID1}" -- ip -details link show "${net}" | grep dummy
+  nsenter -n -t "${LXD_PID2}" -- ip -details link show "${net}" | grep bridge
+
+  # Check we cannot update network global config while in pending state on either node.
+  ! LXD_DIR="${LXD_ONE_DIR}" lxc network set "${net}" ipv4.dhcp false || false
+  ! LXD_DIR="${LXD_TWO_DIR}" lxc network set "${net}" ipv4.dhcp false || false
+
+  # Check we can update node-specific config on the node that has been created (and that it is applied).
+  nsenter -n -t "${LXD_PID2}" -- ip link add "ext-${net}" type dummy # Create dummy interface to add to bridge.
+  LXD_DIR="${LXD_TWO_DIR}" lxc network set "${net}" bridge.external_interfaces "ext-${net}" --target node2
+  nsenter -n -t "${LXD_PID2}" -- ip link show "ext-${net}" | grep "master ${net}"
+
+  # Check we can update node-specific config on the node that hasn't been created (and that only DB is updated).
+  nsenter -n -t "${LXD_PID1}" -- ip link add "ext-${net}" type dummy # Create dummy interface to add to bridge.
+  nsenter -n -t "${LXD_PID1}" -- ip address add 192.0.2.1/32 dev "ext-${net}" # Add address to prevent attach.
+  LXD_DIR="${LXD_ONE_DIR}" lxc network set "${net}" bridge.external_interfaces "ext-${net}" --target node1
+  ! nsenter -n -t "${LXD_PID1}" -- ip link show "ext-${net}" | grep "master ${net}" || false  # Don't expect to be attached.
+
+  # Delete partially created network and check nodes that were created are cleaned up.
+  LXD_DIR="${LXD_ONE_DIR}" lxc network delete "${net}"
+  ! nsenter -n -t "${LXD_PID2}" -- ip link show "${net}" || false # Check bridge is removed.
+  nsenter -n -t "${LXD_PID2}" -- ip link show "ext-${net}" # Check external interface still exists.
+  nsenter -n -t "${LXD_PID1}" -- ip -details link show "${net}" | grep dummy # Check node1 conflict still exists.
+
+  # Create new partially created network and check we can fix it.
+  LXD_DIR="${LXD_ONE_DIR}" lxc network create "${net}" --target node1
+  LXD_DIR="${LXD_ONE_DIR}" lxc network create "${net}" --target node2
+  ! LXD_DIR="${LXD_ONE_DIR}" lxc network create "${net}" || false
+  LXD_DIR="${LXD_ONE_DIR}" lxc network show "${net}" | grep status: | grep -q Pending # Check is still pending.
+  nsenter -n -t "${LXD_PID1}" -- ip link delete "${net}" # Remove conflicting interface.
+  LXD_DIR="${LXD_ONE_DIR}" lxc network create "${net}"
+  LXD_DIR="${LXD_ONE_DIR}" lxc network show "${net}" | grep status: | grep -q Created # Check is created after fix.
+  nsenter -n -t "${LXD_PID1}" -- ip -details link show "${net}" | grep bridge # Check bridge exists.
+  nsenter -n -t "${LXD_PID2}" -- ip -details link show "${net}" | grep bridge # Check bridge exists.
+
+  # Check both nodes marked created.
+  LXD_DIR="${LXD_ONE_DIR}" lxd sql global "SELECT nodes.name,networks_nodes.state FROM nodes JOIN networks_nodes ON networks_nodes.node_id = nodes.id JOIN networks ON networks.id = networks_nodes.network_id WHERE networks.name = '${net}' AND nodes.name = 'node1'" | grep "| node1 | 1     |"
+  LXD_DIR="${LXD_ONE_DIR}" lxd sql global "SELECT nodes.name,networks_nodes.state FROM nodes JOIN networks_nodes ON networks_nodes.node_id = nodes.id JOIN networks ON networks.id = networks_nodes.network_id WHERE networks.name = '${net}' AND nodes.name = 'node2'" | grep "| node2 | 1     |"
+
+  # Delete network.
+  LXD_DIR="${LXD_ONE_DIR}" lxc network delete "${net}"
+  ! nsenter -n -t "${LXD_PID1}" -- ip link show "${net}" || false # Check bridge is removed.
+  ! nsenter -n -t "${LXD_PID2}" -- ip link show "${net}" || false # Check bridge is removed.
 
   LXD_DIR="${LXD_TWO_DIR}" lxd shutdown
   LXD_DIR="${LXD_ONE_DIR}" lxd shutdown

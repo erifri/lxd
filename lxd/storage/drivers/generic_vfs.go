@@ -129,9 +129,11 @@ func genericVFSRenameVolumeSnapshot(d Driver, snapVol Volume, newSnapshotName st
 	oldPath := snapVol.MountPath()
 	newPath := GetVolumeMountPath(d.Name(), snapVol.volType, GetSnapshotVolumeName(parentName, newSnapshotName))
 
-	err := os.Rename(oldPath, newPath)
-	if err != nil {
-		return errors.Wrapf(err, "Failed to rename '%s' to '%s'", oldPath, newPath)
+	if shared.PathExists(oldPath) {
+		err := os.Rename(oldPath, newPath)
+		if err != nil {
+			return errors.Wrapf(err, "Failed to rename '%s' to '%s'", oldPath, newPath)
+		}
 	}
 
 	return nil
@@ -771,10 +773,11 @@ func genericVFSBackupUnpack(d Driver, vol Volume, snapshots []string, srcData io
 		revert.Add(func() { d.DeleteVolumeSnapshot(snapVol, op) })
 	}
 
-	ourMount, err := d.MountVolume(vol, op)
+	err = d.MountVolume(vol, op)
 	if err != nil {
 		return nil, nil, err
 	}
+	revert.Add(func() { d.UnmountVolume(vol, false, op) })
 
 	backupPrefix := "backup/container"
 	if vol.IsVMBlock() {
@@ -805,17 +808,12 @@ func genericVFSBackupUnpack(d Driver, vol Volume, snapshots []string, srcData io
 		// backup restoration process). Create a post hook function that will be called at the end of the
 		// backup restore process to unmount the volume if needed.
 		postHook = func(vol Volume) error {
-			if ourMount {
-				d.UnmountVolume(vol, false, op)
-			}
-
+			d.UnmountVolume(vol, false, op)
 			return nil
 		}
 	} else {
 		// For custom volumes unmount now, there is no post hook as there is no backup.yaml to generate.
-		if ourMount {
-			d.UnmountVolume(vol, false, op)
-		}
+		d.UnmountVolume(vol, false, op)
 	}
 
 	return postHook, revertExternal.Fail, nil

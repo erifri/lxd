@@ -17,6 +17,7 @@ import (
 	"github.com/lxc/lxd/lxd/operations"
 	"github.com/lxc/lxd/lxd/project"
 	projecthelpers "github.com/lxc/lxd/lxd/project"
+	"github.com/lxc/lxd/lxd/rbac"
 	"github.com/lxc/lxd/lxd/response"
 	"github.com/lxc/lxd/lxd/state"
 	"github.com/lxc/lxd/lxd/util"
@@ -65,7 +66,7 @@ func projectsGet(d *Daemon, r *http.Request) response.Response {
 
 			filtered := []api.Project{}
 			for _, project := range projects {
-				if !d.userHasPermission(r, project.Name, "view") {
+				if !rbac.UserHasPermission(r, project.Name, "view") {
 					continue
 				}
 
@@ -83,7 +84,7 @@ func projectsGet(d *Daemon, r *http.Request) response.Response {
 			for _, uri := range uris {
 				name := strings.Split(uri, "/1.0/projects/")[1]
 
-				if !d.userHasPermission(r, name, "view") {
+				if !rbac.UserHasPermission(r, name, "view") {
 					continue
 				}
 
@@ -190,7 +191,7 @@ func projectGet(d *Daemon, r *http.Request) response.Response {
 	name := mux.Vars(r)["name"]
 
 	// Check user permissions
-	if !d.userHasPermission(r, name, "view") {
+	if !rbac.UserHasPermission(r, name, "view") {
 		return response.Forbidden(nil)
 	}
 
@@ -212,7 +213,7 @@ func projectPut(d *Daemon, r *http.Request) response.Response {
 	name := mux.Vars(r)["name"]
 
 	// Check user permissions
-	if !d.userHasPermission(r, name, "manage-projects") {
+	if !rbac.UserHasPermission(r, name, "manage-projects") {
 		return response.Forbidden(nil)
 	}
 
@@ -247,7 +248,7 @@ func projectPatch(d *Daemon, r *http.Request) response.Response {
 	name := mux.Vars(r)["name"]
 
 	// Check user permissions
-	if !d.userHasPermission(r, name, "manage-projects") {
+	if !rbac.UserHasPermission(r, name, "manage-projects") {
 		return response.Forbidden(nil)
 	}
 
@@ -523,6 +524,7 @@ func projectValidateConfig(s *state.State, config map[string]string) error {
 		"features.images":                validate.Optional(validate.IsBool),
 		"features.storage.volumes":       validate.Optional(validate.IsBool),
 		"features.networks":              validate.Optional(validate.IsBool),
+		"limits.instances":               validate.Optional(validate.IsUint32),
 		"limits.containers":              validate.Optional(validate.IsUint32),
 		"limits.virtual-machines":        validate.Optional(validate.IsUint32),
 		"limits.memory":                  validate.Optional(validate.IsSize),
@@ -624,7 +626,7 @@ func projectValidateRestrictedSubnets(s *state.State, value string) error {
 		}
 
 		// Check uplink exists and load config to compare subnets.
-		_, uplink, err := s.Cluster.GetNetworkInAnyState(project.Default, uplinkName)
+		_, uplink, _, err := s.Cluster.GetNetworkInAnyState(project.Default, uplinkName)
 		if err != nil {
 			return errors.Wrapf(err, "Invalid uplink network %q", uplinkName)
 		}

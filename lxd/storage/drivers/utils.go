@@ -310,31 +310,36 @@ func ensureSparseFile(filePath string, sizeBytes int64) error {
 	return nil
 }
 
-// roundVolumeBlockFileSizeBytes parses the supplied size string and then rounds it to the nearest 8k bytes.
-func roundVolumeBlockFileSizeBytes(sizeBytes int64) (int64, error) {
+// roundVolumeBlockFileSizeBytes parses the supplied size string and then rounds it to the nearest multiple of
+// MinBlockBoundary bytes that is equal to or larger than sizeBytes.
+func roundVolumeBlockFileSizeBytes(sizeBytes int64) int64 {
 	// Qemu requires image files to be in traditional storage block boundaries.
 	// We use 8k here to ensure our images are compatible with all of our backend drivers.
 	if sizeBytes < MinBlockBoundary {
 		sizeBytes = MinBlockBoundary
 	}
 
+	roundedSizeBytes := int64(sizeBytes/MinBlockBoundary) * MinBlockBoundary
+
+	// Ensure the rounded size is at least the size specified in sizeBytes.
+	if roundedSizeBytes < sizeBytes {
+		roundedSizeBytes += MinBlockBoundary
+	}
+
 	// Round the size to closest MinBlockBoundary bytes to avoid qemu boundary issues.
-	return int64(sizeBytes/MinBlockBoundary) * MinBlockBoundary, nil
+	return roundedSizeBytes
 }
 
 // ensureVolumeBlockFile creates new block file or enlarges the raw block file for a volume to the specified size.
 // Returns true if resize took place, false if not. Requested size is rounded to nearest block size using
 // roundVolumeBlockFileSizeBytes() before decision whether to resize is taken.
-func ensureVolumeBlockFile(path string, sizeBytes int64) (bool, error) {
+func ensureVolumeBlockFile(vol Volume, path string, sizeBytes int64) (bool, error) {
 	if sizeBytes <= 0 {
 		return false, fmt.Errorf("Size cannot be zero")
 	}
 
 	// Get rounded block size to avoid qemu boundary issues.
-	sizeBytes, err := roundVolumeBlockFileSizeBytes(sizeBytes)
-	if err != nil {
-		return false, err
-	}
+	sizeBytes = roundVolumeBlockFileSizeBytes(sizeBytes)
 
 	if shared.PathExists(path) {
 		fi, err := os.Stat(path)
@@ -343,12 +348,27 @@ func ensureVolumeBlockFile(path string, sizeBytes int64) (bool, error) {
 		}
 
 		oldSizeBytes := fi.Size()
-		if sizeBytes < oldSizeBytes {
-			return false, errors.Wrap(ErrCannotBeShrunk, "You cannot shrink block volumes")
-		}
-
 		if sizeBytes == oldSizeBytes {
 			return false, nil
+		}
+
+		// Block image volumes cannot be resized because they can have a readonly snapshot that doesn't get
+		// updated when the volume's size is changed, and this is what instances are created from.
+		// During initial volume fill allowUnsafeResize is enabled because snapshot hasn't been taken yet.
+		if !vol.allowUnsafeResize && vol.volType == VolumeTypeImage {
+			return false, ErrNotSupported
+		}
+
+		// Only perform pre-resize sanity checks if we are not in "unsafe" mode.
+		// In unsafe mode we expect the caller to know what they are doing and understand the risks.
+		if !vol.allowUnsafeResize {
+			if sizeBytes < oldSizeBytes {
+				return false, errors.Wrap(ErrCannotBeShrunk, "Block volumes cannot be shrunk")
+			}
+
+			if vol.MountInUse() {
+				return false, ErrInUse // We don't allow online resizing of block volumes.
+			}
 		}
 
 		err = ensureSparseFile(path, sizeBytes)
@@ -361,7 +381,7 @@ func ensureVolumeBlockFile(path string, sizeBytes int64) (bool, error) {
 
 	// If path doesn't exist, then there has been no filler function supplied to create it from another source.
 	// So instead create an empty volume (use for PXE booting a VM).
-	err = ensureSparseFile(path, sizeBytes)
+	err := ensureSparseFile(path, sizeBytes)
 	if err != nil {
 		return false, errors.Wrapf(err, "Failed creating disk image %q as size %d", path, sizeBytes)
 	}
@@ -466,16 +486,35 @@ func resolveMountOptions(options string) (uintptr, string) {
 	return mountFlags, strings.Join(tmp, ",")
 }
 
-// shrinkFileSystem shrinks a filesystem if it is supported. Ext4 volumes will be unmounted temporarily if needed.
+// filesystemTypeCanBeShrunk indicates if filesystems of fsType can be shrunk.
+func filesystemTypeCanBeShrunk(fsType string) bool {
+	if fsType == "" {
+		fsType = DefaultFilesystem
+	}
+
+	if shared.StringInSlice(fsType, []string{"ext4", "btrfs"}) {
+		return true
+	}
+
+	return false
+}
+
+// shrinkFileSystem shrinks a filesystem if it is supported.
+// EXT4 volumes will be unmounted temporarily if needed.
+// BTRFS volumes will be mounted temporarily if needed.
 func shrinkFileSystem(fsType string, devPath string, vol Volume, byteSize int64) error {
+	if fsType == "" {
+		fsType = DefaultFilesystem
+	}
+
+	if !filesystemTypeCanBeShrunk(fsType) {
+		return ErrCannotBeShrunk
+	}
+
 	// The smallest unit that resize2fs accepts in byte size (rather than blocks) is kilobytes.
 	strSize := fmt.Sprintf("%dK", byteSize/1024)
 
 	switch fsType {
-	case "": // if not specified, default to ext4.
-		fallthrough
-	case "xfs":
-		return errors.Wrapf(ErrCannotBeShrunk, `Shrinking not supported for filesystem type "%s". A dump, mkfs, and restore are required`, fsType)
 	case "ext4":
 		return vol.UnmountTask(func(op *operations.Operation) error {
 			output, err := shared.RunCommand("e2fsck", "-f", "-y", devPath)
@@ -515,19 +554,21 @@ func shrinkFileSystem(fsType string, devPath string, vol Volume, byteSize int64)
 
 			return nil
 		}, nil)
-	default:
-		return errors.Wrapf(ErrCannotBeShrunk, `Shrinking not supported for filesystem type "%s"`, fsType)
 	}
+
+	return fmt.Errorf("Unrecognised filesystem type %q", fsType)
 }
 
 // growFileSystem grows a filesystem if it is supported. The volume will be mounted temporarily if needed.
 func growFileSystem(fsType string, devPath string, vol Volume) error {
+	if fsType == "" {
+		fsType = DefaultFilesystem
+	}
+
 	return vol.MountTask(func(mountPath string, op *operations.Operation) error {
 		var msg string
 		var err error
 		switch fsType {
-		case "": // if not specified, default to ext4
-			fallthrough
 		case "ext4":
 			msg, err = shared.TryRunCommand("resize2fs", devPath)
 		case "xfs":
@@ -535,11 +576,11 @@ func growFileSystem(fsType string, devPath string, vol Volume) error {
 		case "btrfs":
 			msg, err = shared.TryRunCommand("btrfs", "filesystem", "resize", "max", mountPath)
 		default:
-			return fmt.Errorf(`Growing not supported for filesystem type "%s"`, fsType)
+			return fmt.Errorf("Unrecognised filesystem type %q", fsType)
 		}
 
 		if err != nil {
-			return fmt.Errorf(`Could not extend underlying %s filesystem for "%s": %s`, fsType, devPath, msg)
+			return fmt.Errorf("Could not grow underlying %q filesystem for %q: %s", fsType, devPath, msg)
 		}
 
 		return nil

@@ -545,7 +545,7 @@ func patchRenameCustomVolumeLVs(name string, d *Daemon) error {
 	pools, _ := d.cluster.GetStoragePoolNames()
 
 	for _, poolName := range pools {
-		poolID, pool, err := d.cluster.GetStoragePoolInAnyState(poolName)
+		poolID, pool, _, err := d.cluster.GetStoragePoolInAnyState(poolName)
 		if err != nil {
 			return err
 		}
@@ -815,7 +815,7 @@ func upgradeFromStorageTypeBtrfs(name string, d *Daemon, defaultPoolName string,
 
 		// Get the pool ID as we need it for storage volume creation.
 		// (Use a tmp variable as Go's scoping is freaking me out.)
-		tmp, pool, err := d.cluster.GetStoragePoolInAnyState(defaultPoolName)
+		tmp, pool, _, err := d.cluster.GetStoragePoolInAnyState(defaultPoolName)
 		if err != nil {
 			logger.Errorf("Failed to query database: %s", err)
 			return err
@@ -847,7 +847,7 @@ func upgradeFromStorageTypeBtrfs(name string, d *Daemon, defaultPoolName string,
 			Driver: defaultStorageTypeName,
 		}
 
-		_, err = storagePools.CreatePool(d.State(), poolID, &poolInfo, false, nil)
+		_, err = storagePools.CreatePool(d.State(), poolID, &poolInfo)
 		if err != nil {
 			return err
 		}
@@ -868,7 +868,7 @@ func upgradeFromStorageTypeBtrfs(name string, d *Daemon, defaultPoolName string,
 	}
 
 	// Get storage pool from the db after having updated it above.
-	_, defaultPool, err := d.cluster.GetStoragePoolInAnyState(defaultPoolName)
+	_, defaultPool, _, err := d.cluster.GetStoragePoolInAnyState(defaultPoolName)
 	if err != nil {
 		return err
 	}
@@ -877,7 +877,7 @@ func upgradeFromStorageTypeBtrfs(name string, d *Daemon, defaultPoolName string,
 		// Initialize empty storage volume configuration for the
 		// container.
 		containerPoolVolumeConfig := map[string]string{}
-		err = driver.VolumeFillDefault(containerPoolVolumeConfig, defaultPool)
+		err = volumeFillDefault(containerPoolVolumeConfig, defaultPool)
 		if err != nil {
 			return err
 		}
@@ -965,7 +965,7 @@ func upgradeFromStorageTypeBtrfs(name string, d *Daemon, defaultPoolName string,
 			// Initialize empty storage volume configuration for the
 			// container.
 			snapshotPoolVolumeConfig := map[string]string{}
-			err = driver.VolumeFillDefault(snapshotPoolVolumeConfig, defaultPool)
+			err = volumeFillDefault(snapshotPoolVolumeConfig, defaultPool)
 			if err != nil {
 				return err
 			}
@@ -1046,7 +1046,7 @@ func upgradeFromStorageTypeBtrfs(name string, d *Daemon, defaultPoolName string,
 	images := append(imgPublic, imgPrivate...)
 	for _, img := range images {
 		imagePoolVolumeConfig := map[string]string{}
-		err = driver.VolumeFillDefault(imagePoolVolumeConfig, defaultPool)
+		err = volumeFillDefault(imagePoolVolumeConfig, defaultPool)
 		if err != nil {
 			return err
 		}
@@ -1115,7 +1115,7 @@ func upgradeFromStorageTypeDir(name string, d *Daemon, defaultPoolName string, d
 
 		// Get the pool ID as we need it for storage volume creation.
 		// (Use a tmp variable as Go's scoping is freaking me out.)
-		tmp, pool, err := d.cluster.GetStoragePoolInAnyState(defaultPoolName)
+		tmp, pool, _, err := d.cluster.GetStoragePoolInAnyState(defaultPoolName)
 		if err != nil {
 			logger.Errorf("Failed to query database: %s", err)
 			return err
@@ -1147,7 +1147,7 @@ func upgradeFromStorageTypeDir(name string, d *Daemon, defaultPoolName string, d
 			Driver: defaultStorageTypeName,
 		}
 
-		_, err = storagePools.CreatePool(d.State(), poolID, &poolInfo, false, nil)
+		_, err = storagePools.CreatePool(d.State(), poolID, &poolInfo)
 		if err != nil {
 			return err
 		}
@@ -1157,7 +1157,7 @@ func upgradeFromStorageTypeDir(name string, d *Daemon, defaultPoolName string, d
 	}
 
 	// Get storage pool from the db after having updated it above.
-	_, defaultPool, err := d.cluster.GetStoragePoolInAnyState(defaultPoolName)
+	_, defaultPool, _, err := d.cluster.GetStoragePoolInAnyState(defaultPoolName)
 	if err != nil {
 		return err
 	}
@@ -1167,7 +1167,7 @@ func upgradeFromStorageTypeDir(name string, d *Daemon, defaultPoolName string, d
 		// Initialize empty storage volume configuration for the
 		// container.
 		containerPoolVolumeConfig := map[string]string{}
-		err = driver.VolumeFillDefault(containerPoolVolumeConfig, defaultPool)
+		err = volumeFillDefault(containerPoolVolumeConfig, defaultPool)
 		if err != nil {
 			return err
 		}
@@ -1284,7 +1284,7 @@ func upgradeFromStorageTypeDir(name string, d *Daemon, defaultPoolName string, d
 		// Initialize empty storage volume configuration for the
 		// container.
 		snapshotPoolVolumeConfig := map[string]string{}
-		err = driver.VolumeFillDefault(snapshotPoolVolumeConfig, defaultPool)
+		err = volumeFillDefault(snapshotPoolVolumeConfig, defaultPool)
 		if err != nil {
 			return err
 		}
@@ -1314,7 +1314,7 @@ func upgradeFromStorageTypeDir(name string, d *Daemon, defaultPoolName string, d
 	images := append(imgPublic, imgPrivate...)
 	for _, img := range images {
 		imagePoolVolumeConfig := map[string]string{}
-		err = driver.VolumeFillDefault(imagePoolVolumeConfig, defaultPool)
+		err = volumeFillDefault(imagePoolVolumeConfig, defaultPool)
 		if err != nil {
 			return err
 		}
@@ -1417,7 +1417,7 @@ func upgradeFromStorageTypeLvm(name string, d *Daemon, defaultPoolName string, d
 
 		// Get the pool ID as we need it for storage volume creation.
 		// (Use a tmp variable as Go's scoping is freaking me out.)
-		tmp, pool, err := d.cluster.GetStoragePoolInAnyState(defaultPoolName)
+		tmp, pool, _, err := d.cluster.GetStoragePoolInAnyState(defaultPoolName)
 		if err != nil {
 			logger.Errorf("Failed to query database: %s", err)
 			return err
@@ -1466,7 +1466,7 @@ func upgradeFromStorageTypeLvm(name string, d *Daemon, defaultPoolName string, d
 	}
 
 	// Get storage pool from the db after having updated it above.
-	_, defaultPool, err := d.cluster.GetStoragePoolInAnyState(defaultPoolName)
+	_, defaultPool, _, err := d.cluster.GetStoragePoolInAnyState(defaultPoolName)
 	if err != nil {
 		return err
 	}
@@ -1476,7 +1476,7 @@ func upgradeFromStorageTypeLvm(name string, d *Daemon, defaultPoolName string, d
 		// Initialize empty storage volume configuration for the
 		// container.
 		containerPoolVolumeConfig := map[string]string{}
-		err = driver.VolumeFillDefault(containerPoolVolumeConfig, defaultPool)
+		err = volumeFillDefault(containerPoolVolumeConfig, defaultPool)
 		if err != nil {
 			return err
 		}
@@ -1575,15 +1575,12 @@ func upgradeFromStorageTypeLvm(name string, d *Daemon, defaultPoolName string, d
 				err = func() error {
 					// In case the new LVM logical volume for the container is not mounted mount it.
 					if !shared.IsMountPoint(newContainerMntPoint) {
-						mountInfo, err := pool.MountInstance(ctStruct, nil)
+						_, err = pool.MountInstance(ctStruct, nil)
 						if err != nil {
 							logger.Errorf("Failed to mount new empty LVM logical volume for container %s: %s", ct, err)
 							return err
 						}
-
-						if mountInfo.OurMount {
-							defer pool.UnmountInstance(ctStruct, nil)
-						}
+						defer pool.UnmountInstance(ctStruct, nil)
 					}
 
 					// Use rsync to fill the empty volume.
@@ -1637,7 +1634,7 @@ func upgradeFromStorageTypeLvm(name string, d *Daemon, defaultPoolName string, d
 			// Initialize empty storage volume configuration for the
 			// container.
 			snapshotPoolVolumeConfig := map[string]string{}
-			err = driver.VolumeFillDefault(snapshotPoolVolumeConfig, defaultPool)
+			err = volumeFillDefault(snapshotPoolVolumeConfig, defaultPool)
 			if err != nil {
 				return err
 			}
@@ -1741,15 +1738,12 @@ func upgradeFromStorageTypeLvm(name string, d *Daemon, defaultPoolName string, d
 					err = func() error {
 						// In case the new LVM logical volume for the snapshot is not mounted mount it.
 						if !shared.IsMountPoint(newSnapshotMntPoint) {
-							mountInfo, err := pool.MountInstanceSnapshot(csStruct, nil)
+							_, err = pool.MountInstanceSnapshot(csStruct, nil)
 							if err != nil {
 								logger.Errorf("Failed to mount new empty LVM logical volume for container %s: %s", cs, err)
 								return err
 							}
-
-							if mountInfo.OurMount {
-								defer pool.UnmountInstanceSnapshot(csStruct, nil)
-							}
+							defer pool.UnmountInstanceSnapshot(csStruct, nil)
 						}
 
 						// Use rsync to fill the snapshot volume.
@@ -1820,7 +1814,7 @@ func upgradeFromStorageTypeLvm(name string, d *Daemon, defaultPoolName string, d
 
 	for _, img := range images {
 		imagePoolVolumeConfig := map[string]string{}
-		err = driver.VolumeFillDefault(imagePoolVolumeConfig, defaultPool)
+		err = volumeFillDefault(imagePoolVolumeConfig, defaultPool)
 		if err != nil {
 			return err
 		}
@@ -1935,7 +1929,7 @@ func upgradeFromStorageTypeZfs(name string, d *Daemon, defaultPoolName string, d
 
 		// Get the pool ID as we need it for storage volume creation.
 		// (Use a tmp variable as Go's scoping is freaking me out.)
-		tmp, pool, err := d.cluster.GetStoragePoolInAnyState(poolName)
+		tmp, pool, _, err := d.cluster.GetStoragePoolInAnyState(poolName)
 		if err != nil {
 			logger.Errorf("Failed to query database: %s", err)
 			return err
@@ -1992,7 +1986,7 @@ func upgradeFromStorageTypeZfs(name string, d *Daemon, defaultPoolName string, d
 	}
 
 	// Get storage pool from the db after having updated it above.
-	_, defaultPool, err := d.cluster.GetStoragePoolInAnyState(poolName)
+	_, defaultPool, _, err := d.cluster.GetStoragePoolInAnyState(poolName)
 	if err != nil {
 		return err
 	}
@@ -2012,7 +2006,7 @@ func upgradeFromStorageTypeZfs(name string, d *Daemon, defaultPoolName string, d
 		// Initialize empty storage volume configuration for the
 		// container.
 		containerPoolVolumeConfig := map[string]string{}
-		err = driver.VolumeFillDefault(containerPoolVolumeConfig, defaultPool)
+		err = volumeFillDefault(containerPoolVolumeConfig, defaultPool)
 		if err != nil {
 			return err
 		}
@@ -2098,7 +2092,7 @@ func upgradeFromStorageTypeZfs(name string, d *Daemon, defaultPoolName string, d
 			// Initialize empty storage volume configuration for the
 			// container.
 			snapshotPoolVolumeConfig := map[string]string{}
-			err = driver.VolumeFillDefault(snapshotPoolVolumeConfig, defaultPool)
+			err = volumeFillDefault(snapshotPoolVolumeConfig, defaultPool)
 			if err != nil {
 				return err
 			}
@@ -2154,7 +2148,7 @@ func upgradeFromStorageTypeZfs(name string, d *Daemon, defaultPoolName string, d
 	images := append(imgPublic, imgPrivate...)
 	for _, img := range images {
 		imagePoolVolumeConfig := map[string]string{}
-		err = driver.VolumeFillDefault(imagePoolVolumeConfig, defaultPool)
+		err = volumeFillDefault(imagePoolVolumeConfig, defaultPool)
 		if err != nil {
 			return err
 		}
@@ -2504,7 +2498,7 @@ func patchStorageApiKeys(name string, d *Daemon) error {
 	}
 
 	for _, poolName := range pools {
-		_, pool, err := d.cluster.GetStoragePoolInAnyState(poolName)
+		_, pool, _, err := d.cluster.GetStoragePoolInAnyState(poolName)
 		if err != nil {
 			logger.Errorf("Failed to query database: %s", err)
 			return err
@@ -2559,7 +2553,7 @@ func patchStorageApiUpdateStorageConfigs(name string, d *Daemon) error {
 	}
 
 	for _, poolName := range pools {
-		poolID, pool, err := d.cluster.GetStoragePoolInAnyState(poolName)
+		poolID, pool, _, err := d.cluster.GetStoragePoolInAnyState(poolName)
 		if err != nil {
 			logger.Errorf("Failed to query database: %s", err)
 			return err
@@ -2646,7 +2640,7 @@ func patchStorageApiUpdateStorageConfigs(name string, d *Daemon) error {
 			}
 
 			// Insert default values.
-			err := driver.VolumeFillDefault(volume.Config, pool)
+			err := volumeFillDefault(volume.Config, pool)
 			if err != nil {
 				return err
 			}
@@ -2707,7 +2701,7 @@ func patchStorageApiLxdOnBtrfs(name string, d *Daemon) error {
 	}
 
 	for _, poolName := range pools {
-		_, pool, err := d.cluster.GetStoragePoolInAnyState(poolName)
+		_, pool, _, err := d.cluster.GetStoragePoolInAnyState(poolName)
 		if err != nil {
 			logger.Errorf("Failed to query database: %s", err)
 			return err
@@ -2764,7 +2758,7 @@ func patchStorageApiDetectLVSize(name string, d *Daemon) error {
 	}
 
 	for _, poolName := range pools {
-		poolID, pool, err := d.cluster.GetStoragePoolInAnyState(poolName)
+		poolID, pool, _, err := d.cluster.GetStoragePoolInAnyState(poolName)
 		if err != nil {
 			logger.Errorf("Failed to query database: %s", err)
 			return err
@@ -2822,7 +2816,7 @@ func patchStorageApiDetectLVSize(name string, d *Daemon) error {
 				volume.Config = map[string]string{}
 
 				// Insert default values.
-				err := driver.VolumeFillDefault(volume.Config, pool)
+				err := volumeFillDefault(volume.Config, pool)
 				if err != nil {
 					return err
 				}
@@ -2874,7 +2868,7 @@ func patchStorageZFSnoauto(name string, d *Daemon) error {
 	}
 
 	for _, poolName := range pools {
-		_, pool, err := d.cluster.GetStoragePoolInAnyState(poolName)
+		_, pool, _, err := d.cluster.GetStoragePoolInAnyState(poolName)
 		if err != nil {
 			logger.Errorf("Failed to query database: %s", err)
 			return err
@@ -2939,7 +2933,7 @@ func patchStorageZFSVolumeSize(name string, d *Daemon) error {
 	}
 
 	for _, poolName := range pools {
-		poolID, pool, err := d.cluster.GetStoragePoolInAnyState(poolName)
+		poolID, pool, _, err := d.cluster.GetStoragePoolInAnyState(poolName)
 		if err != nil {
 			logger.Errorf("Failed to query database: %s", err)
 			return err
@@ -3026,7 +3020,7 @@ func patchStorageApiDirBindMount(name string, d *Daemon) error {
 	}
 
 	for _, poolName := range pools {
-		_, pool, err := d.cluster.GetStoragePoolInAnyState(poolName)
+		_, pool, _, err := d.cluster.GetStoragePoolInAnyState(poolName)
 		if err != nil {
 			logger.Errorf("Failed to query database: %s", err)
 			return err
@@ -3111,7 +3105,7 @@ func patchStorageApiCephSizeRemove(name string, d *Daemon) error {
 	}
 
 	for _, poolName := range pools {
-		_, pool, err := d.cluster.GetStoragePoolInAnyState(poolName)
+		_, pool, _, err := d.cluster.GetStoragePoolInAnyState(poolName)
 		if err != nil {
 			logger.Errorf("Failed to query database: %s", err)
 			return err
@@ -3377,14 +3371,11 @@ func patchStorageApiPermissions(name string, d *Daemon) error {
 
 			// Run task in anonymous function so as not to stack up defers.
 			err = func() error {
-				ourMount, err := pool.MountCustomVolume(project.Default, vol, nil)
+				err = pool.MountCustomVolume(project.Default, vol, nil)
 				if err != nil {
 					return err
 				}
-
-				if ourMount {
-					defer pool.UnmountCustomVolume(project.Default, vol, nil)
-				}
+				defer pool.UnmountCustomVolume(project.Default, vol, nil)
 
 				cuMntPoint := storageDrivers.GetVolumeMountPath(poolName, storageDrivers.VolumeTypeCustom, vol)
 				err = os.Chmod(cuMntPoint, 0711)
@@ -3407,25 +3398,29 @@ func patchStorageApiPermissions(name string, d *Daemon) error {
 
 	for _, ct := range cRegular {
 		// load the container from the database
-		ctStruct, err := instance.LoadByProjectAndName(d.State(), "default", ct)
+		inst, err := instance.LoadByProjectAndName(d.State(), project.Default, ct)
 		if err != nil {
 			return err
 		}
 
-		ourMount, err := ctStruct.StorageStart()
+		// Start the storage if needed
+		pool, err := storagePools.GetPoolByInstance(d.State(), inst)
 		if err != nil {
 			return err
 		}
 
-		if ctStruct.IsPrivileged() {
-			err = os.Chmod(ctStruct.Path(), 0700)
+		_, err = storagePools.InstanceMount(pool, inst, nil)
+		if err != nil {
+			return err
+		}
+
+		if inst.IsPrivileged() {
+			err = os.Chmod(inst.Path(), 0700)
 		} else {
-			err = os.Chmod(ctStruct.Path(), 0711)
+			err = os.Chmod(inst.Path(), 0711)
 		}
 
-		if ourMount {
-			ctStruct.StorageStop()
-		}
+		storagePools.InstanceUnmount(pool, inst, nil)
 
 		if err != nil && !os.IsNotExist(err) {
 			return err
@@ -3792,7 +3787,7 @@ func patchNetworkCearBridgeVolatileHwaddr(name string, d *Daemon) error {
 	}
 
 	for _, networkName := range networks {
-		_, net, err := d.cluster.GetNetworkInAnyState(projectName, networkName)
+		_, net, _, err := d.cluster.GetNetworkInAnyState(projectName, networkName)
 		if err != nil {
 			return errors.Wrapf(err, "Failed loading network %q for network_clear_bridge_volatile_hwaddr patch", networkName)
 		}

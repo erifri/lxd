@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/lxc/lxd/lxd/backup"
+	"github.com/lxc/lxd/lxd/cluster/request"
 	"github.com/lxc/lxd/lxd/instance"
 	"github.com/lxc/lxd/lxd/migration"
 	"github.com/lxc/lxd/lxd/operations"
@@ -23,11 +24,23 @@ type mockBackend struct {
 }
 
 func (b *mockBackend) ID() int64 {
-	return -1
+	return 1 //  The tests expect the storage pool ID to be 1.
 }
 
 func (b *mockBackend) Name() string {
 	return b.name
+}
+
+func (b *mockBackend) Description() string {
+	return ""
+}
+
+func (b *mockBackend) Status() string {
+	return api.NetworkStatusUnknown
+}
+
+func (b *mockBackend) LocalStatus() string {
+	return api.NetworkStatusUnknown
 }
 
 func (b *mockBackend) Driver() drivers.Driver {
@@ -47,11 +60,19 @@ func (b *mockBackend) GetResources() (*api.ResourcesStoragePool, error) {
 	return nil, nil
 }
 
-func (b *mockBackend) Delete(localOnly bool, op *operations.Operation) error {
+func (b *mockBackend) IsUsed() (bool, error) {
+	return false, nil
+}
+
+func (b *mockBackend) Delete(clientType request.ClientType, op *operations.Operation) error {
 	return nil
 }
 
-func (b *mockBackend) Update(localOnly bool, newDescription string, newConfig map[string]string, op *operations.Operation) error {
+func (b *mockBackend) Update(clientType request.ClientType, newDescription string, newConfig map[string]string, op *operations.Operation) error {
+	return nil
+}
+
+func (b *mockBackend) Create(clientType request.ClientType, op *operations.Operation) error {
 	return nil
 }
 
@@ -64,6 +85,10 @@ func (b *mockBackend) Unmount() (bool, error) {
 }
 
 func (b *mockBackend) ApplyPatch(name string) error {
+	return nil
+}
+
+func (b *mockBackend) FillInstanceConfig(inst instance.Instance, config map[string]string) error {
 	return nil
 }
 
@@ -128,7 +153,7 @@ func (b *mockBackend) SetInstanceQuota(inst instance.Instance, size string, op *
 }
 
 func (b *mockBackend) MountInstance(inst instance.Instance, op *operations.Operation) (*MountInfo, error) {
-	return &MountInfo{OurMount: true}, nil
+	return &MountInfo{}, nil
 }
 
 func (b *mockBackend) UnmountInstance(inst instance.Instance, op *operations.Operation) (bool, error) {
@@ -152,7 +177,7 @@ func (b *mockBackend) RestoreInstanceSnapshot(inst instance.Instance, src instan
 }
 
 func (b *mockBackend) MountInstanceSnapshot(inst instance.Instance, op *operations.Operation) (*MountInfo, error) {
-	return &MountInfo{OurMount: true}, nil
+	return &MountInfo{}, nil
 }
 
 func (b *mockBackend) UnmountInstanceSnapshot(inst instance.Instance, op *operations.Operation) (bool, error) {
@@ -211,8 +236,8 @@ func (b *mockBackend) GetCustomVolumeUsage(projectName string, volName string) (
 	return 0, nil
 }
 
-func (b *mockBackend) MountCustomVolume(projectName string, volName string, op *operations.Operation) (bool, error) {
-	return true, nil
+func (b *mockBackend) MountCustomVolume(projectName string, volName string, op *operations.Operation) error {
+	return nil
 }
 
 func (b *mockBackend) UnmountCustomVolume(projectName string, volName string, op *operations.Operation) (bool, error) {

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/lxc/lxd/lxd/backup"
+	"github.com/lxc/lxd/lxd/cluster/request"
 	"github.com/lxc/lxd/lxd/instance"
 	"github.com/lxc/lxd/lxd/migration"
 	"github.com/lxc/lxd/lxd/operations"
@@ -15,7 +16,6 @@ import (
 
 // MountInfo represents info about the result of a mount operation.
 type MountInfo struct {
-	OurMount bool   // Whether a mount was needed.
 	DiskPath string // The location of the block disk (if supported).
 }
 
@@ -25,17 +25,23 @@ type Pool interface {
 	ID() int64
 	Name() string
 	Driver() drivers.Driver
+	Description() string
+	Status() string
+	LocalStatus() string
 
 	GetResources() (*api.ResourcesStoragePool, error)
-	Delete(localOnly bool, op *operations.Operation) error
-	Update(driverOnly bool, newDesc string, newConfig map[string]string, op *operations.Operation) error
+	IsUsed() (bool, error)
+	Delete(clientType request.ClientType, op *operations.Operation) error
+	Update(clientType request.ClientType, newDesc string, newConfig map[string]string, op *operations.Operation) error
 
+	Create(clientType request.ClientType, op *operations.Operation) error
 	Mount() (bool, error)
 	Unmount() (bool, error)
 
 	ApplyPatch(name string) error
 
 	// Instances.
+	FillInstanceConfig(inst instance.Instance, config map[string]string) error
 	CreateInstance(inst instance.Instance, op *operations.Operation) error
 	CreateInstanceFromBackup(srcBackup backup.Info, srcData io.ReadSeeker, op *operations.Operation) (func(instance.Instance) error, func(), error)
 	CreateInstanceFromCopy(inst instance.Instance, src instance.Instance, snapshots bool, op *operations.Operation) error
@@ -79,7 +85,7 @@ type Pool interface {
 	DeleteCustomVolume(projectName string, volName string, op *operations.Operation) error
 	GetCustomVolumeDisk(projectName string, volName string) (string, error)
 	GetCustomVolumeUsage(projectName string, volName string) (int64, error)
-	MountCustomVolume(projectName string, volName string, op *operations.Operation) (bool, error)
+	MountCustomVolume(projectName string, volName string, op *operations.Operation) error
 	UnmountCustomVolume(projectName string, volName string, op *operations.Operation) (bool, error)
 
 	// Custom volume snapshots.

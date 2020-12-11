@@ -72,17 +72,16 @@ func (d *ceph) isRemote() bool {
 // Info returns info about the driver and its environment.
 func (d *ceph) Info() Info {
 	return Info{
-		Name:               "ceph",
-		Version:            cephVersion,
-		OptimizedImages:    true,
-		PreservesInodes:    false,
-		Remote:             d.isRemote(),
-		VolumeTypes:        []VolumeType{VolumeTypeCustom, VolumeTypeImage, VolumeTypeContainer, VolumeTypeVM},
-		BlockBacking:       true,
-		RunningQuotaResize: false,
-		RunningCopyFreeze:  true,
-		DirectIO:           true,
-		MountedRoot:        false,
+		Name:              "ceph",
+		Version:           cephVersion,
+		OptimizedImages:   true,
+		PreservesInodes:   false,
+		Remote:            d.isRemote(),
+		VolumeTypes:       []VolumeType{VolumeTypeCustom, VolumeTypeImage, VolumeTypeContainer, VolumeTypeVM},
+		BlockBacking:      true,
+		RunningCopyFreeze: true,
+		DirectIO:          true,
+		MountedRoot:       false,
 	}
 }
 
@@ -214,9 +213,7 @@ func (d *ceph) Delete(op *operations.Operation) error {
 	}
 
 	// Check whether we own the pool and only remove in this case.
-	if d.config["volatile.pool.pristine"] != "" &&
-		shared.IsTrue(d.config["volatile.pool.pristine"]) {
-
+	if shared.IsTrue(d.config["volatile.pool.pristine"]) {
 		// Delete the osd pool.
 		if poolExists {
 			err := d.osdDeletePool()
